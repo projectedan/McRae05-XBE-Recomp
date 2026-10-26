@@ -37,3 +37,15 @@ endif()
 
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(CMR2005 default.xbe game.toml ${GAME_PARTITIONS} game)
+
+# build ID: the commit this build came from, logged at start. The header is rewritten only when the commit changes,
+# so a new commit recompiles game_info.cpp alone
+execute_process(COMMAND git describe --always --dirty --abbrev=7 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE CMR_BUILD_ID OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT CMR_BUILD_ID)
+    set(CMR_BUILD_ID "no-git")
+endif()
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/build_id/build_id.h
+     CONTENT "#pragma once\n#define CMR_BUILD_ID \"@CMR_BUILD_ID@\"\n" @ONLY)
+set_property(SOURCE src/common/game_info.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR}/build_id)
+message(STATUS "build ${CMR_BUILD_ID}")

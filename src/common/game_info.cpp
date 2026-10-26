@@ -1,4 +1,15 @@
 #include "app/app.h"
+#include "core/log.h"
+
+#if __has_include("build_id.h")
+#include "build_id.h"  // CMakeLists.txt: the commit this build came from
+#else
+#define CMR_BUILD_ID "unknown"
+#endif
+
+namespace {
+void Init() { LOGI("cmr2005: build %s", CMR_BUILD_ID); }
+}  // namespace
 
 // Colin McRae Rally 2005 (USA, Xbox): what the runtime asks of the game; strings must be set, hooks may stay null
 const app::GameInfo app::kGame = {
@@ -13,7 +24,7 @@ const app::GameInfo app::kGame = {
     .options = {},                        // game settings kept in the settings file
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
-    .init = nullptr,                      // after the settings load, before the window and boot
+    .init = Init,                         // after the settings load, before the window and boot
     .loaded = nullptr,                    // image in memory, before its entry point runs
     .window = nullptr,                    // the game window is up
     .message = nullptr,                   // window messages first; true takes one
