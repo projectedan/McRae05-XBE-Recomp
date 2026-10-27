@@ -73,6 +73,14 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
 
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
+# xemu's DSP56300 interpreter and DSP DMA unit, for the effects image (third_party/xemu-dsp/README.md: GPL-2.0-or-later
+# and LGPL-2.1-or-later)
+set(XBE_XEMU_DSP ${XBE_SDK_DIR}/third_party/xemu-dsp)
+set(XBE_XEMU_DSP_SOURCES ${XBE_XEMU_DSP}/interp/dsp_cpu.c ${XBE_XEMU_DSP}/dsp_dma.c)
+list(APPEND XBE_RUNTIME_SOURCES ${XBE_XEMU_DSP_SOURCES})
+set_source_files_properties(${XBE_XEMU_DSP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+set_source_files_properties(${XBE_XEMU_DSP_SOURCES} ${XBE_SDK_DIR}/runtime/xdk/dsp_image.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${XBE_XEMU_DSP}/shim;${XBE_XEMU_DSP};${XBE_XEMU_DSP}/interp")
 # SDL's headers go to the input code alone (it is linked LINK_ONLY)
 set_source_files_properties(${XBE_SDK_DIR}/runtime/core/input.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 

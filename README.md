@@ -54,3 +54,11 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+- [xemu](https://github.com/xemu-project/xemu)'s DSP56300 interpreter and DSP DMA unit, which run the game's own audio effects (`sdk/third_party/xemu-dsp`).
+
+## License
+
+This port is free software under the [GNU General Public License, version 3](LICENSE). It includes xemu's DSP code
+(GPL-2.0-or-later and LGPL-2.1-or-later, see `sdk/third_party/xemu-dsp`), so builds that contain it are distributed
+under the GPL. The SDK in `sdk/` keeps its own MIT licence (`sdk/LICENSE`) for the parts that come from it. No game
+code or data is included: you supply your own copy of the game.

@@ -64,3 +64,16 @@ freely, subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
+
+
+xemu DSP56300 interpreter and DSP DMA unit (https://github.com/xemu-project/xemu, hw/xbox/mcpx/apu/dsp, commit
+25e1ee2fd59a451f2ab57e825b4f8a5414220c8b)
+
+Copyright (c) 2015 espes, (c) 2020-2025 Matt Borgerson; the interpreter adapted from Hatari's DSP M56001
+emulation, (c) 2008 Thomas Huth and others, as each file states.
+
+The interpreter (interp/) is licensed under the GNU General Public License, version 2 or (at your option) any later
+version; the DMA unit (dsp_dma.c, dsp_dma.h, dsp_dma_regs.h) under the GNU Lesser General Public License, version 2.1
+or (at your option) any later version. The executable that contains them is distributed under the GNU General Public
+License, version 3. The licence texts and the source are at https://github.com/xemu-project/xemu and in the source of
+this program.

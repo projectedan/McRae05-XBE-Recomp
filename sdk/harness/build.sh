@@ -20,9 +20,10 @@ done
 REPO=$(realpath "$REPO"); GEN=$(realpath "$GEN"); mkdir -p "$OUT"; OUT=$(realpath "$OUT")
 EXE=${EXE:-$(basename "$GEN")}; GEN_OBJ=${GEN_OBJ:-$OUT/gen}; mkdir -p "$GEN_OBJ" "$OUT/host"
 H=$(dirname "$(realpath "$0")"); RT=$REPO/sdk/runtime
-CXX=${CXX:-clang++}; JOBS=${JOBS:-$(nproc)}
+CXX=${CXX:-clang++}; CC=${CC:-clang}; JOBS=${JOBS:-$(nproc)}
+XD=$REPO/sdk/third_party/xemu-dsp  # xemu's DSP56300 interpreter and DMA unit, C
 BASE="-std=c++20 -march=x86-64-v2 -fno-strict-aliasing"
-HOST="$BASE -O1 -g -I$REPO/src -I$RT -I$GEN -I$H -I$H/compat -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
+HOST="$BASE -O1 -g -I$REPO/src -I$RT -I$GEN -I$H -I$H/compat -I$XD/shim -I$XD -I$XD/interp -DXBE_RAW_VERTICES=0 -DXBE_RENDER_THREAD=0"
 
 # generated code, an object rebuilt only when its partition is newer
 export CXX BASE RT GEN GEN_OBJ
@@ -47,6 +48,10 @@ for f in $SRC; do
     rm -f "$o"
     $CXX $HOST -c "$f" -o "$o" &
     [ "$(jobs -r | wc -l)" -ge "$JOBS" ] && wait -n
+done
+for f in "$XD/interp/dsp_cpu.c" "$XD/dsp_dma.c"; do
+    o=$OUT/host/xemu_$(basename "$f" .c).o; objs+=("$o")
+    [ "$o" -nt "$f" ] || $CC -O2 -g -w -I"$XD/shim" -I"$XD" -I"$XD/interp" -c "$f" -o "$o"
 done
 wait
 $CXX -o "$OUT/$EXE" "${objs[@]}" "$GEN_OBJ"/*.o -lpthread

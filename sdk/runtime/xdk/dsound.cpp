@@ -1058,8 +1058,26 @@ HLE_STDCALL(IDirectSound_SynchPlayback, 1) {
     return 0;
 }
 
+// DSOUND's GP program, which the library downloads to P:0 when it starts the GP: found in its section by its first
+// words, and taken up to the effects chain's empty entry at P:0x171 (nop, rts) that the image's effects replace
+static std::vector<uint8_t> GpProgram() {
+    static const uint32_t kStart[] = {0x0BF080, 0x000155, 0x300600, 0x310000};
+    constexpr uint32_t kWords = 0x173;
+    for (auto& s : g_image->sections) {
+        if (s.name != "DSOUND") continue;
+        const uint8_t* p = static_cast<const uint8_t*>(HostPtr(s.va));
+        for (size_t o = 0; o + kWords * 4 <= s.vsize; o += 4) {
+            if (std::memcmp(p + o, kStart, sizeof kStart) != 0) continue;
+            uint32_t entry[2];
+            std::memcpy(entry, p + o + (kWords - 2) * 4, 8);
+            if (entry[0] == 0 && entry[1] == 0xC) return {p + o, p + o + kWords * 4};
+        }
+    }
+    return {};
+}
+
 // The descriptor keeps the image's effect list so the title finds its indices. State segments hold the image's plain
-// state, which the host effects read (xdk/dsp_image.cpp); code, Y memory and scratch point at zeroed memory.
+// state, kept in step with the GP's X memory (xdk/dsp_image.cpp); code, Y memory and scratch point at zeroed memory.
 // loc: DSEFFECTIMAGELOC, the I3DL2 reverb's index first
 static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name, uint32_t loc) {
     constexpr int kStateSegment = 1;
@@ -1092,7 +1110,7 @@ static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name, u
     g_effect_states = states;
     std::vector<uint32_t> addresses;
     for (const Segment& s : states) addresses.push_back(s.at);
-    dsp::Load(img, t, addresses, reverb);
+    dsp::Load(img, t, addresses, reverb, GpProgram());
     return desc;
 }
 

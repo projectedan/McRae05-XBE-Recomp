@@ -1,9 +1,15 @@
-// The DSP effects image on the host. The image's code blocks are encrypted, its effect state is plain: each effect's
-// state starts with a header, then its input and output buffer addresses and its gains. The GP DSP runs the effects
-// in image order on 32 sample frames; a mix bin b is X memory 0x1400 + b * 0x20 to read and 0xC00 + b * 0x20 to
-// write, the same storage. Effects are recognised by their decrypted code, the same in every 5849 image seen (HL2,
-// Double Agent, Black, 007): gain, mixer, filter, I3DL2 reverb and crosstalk are reproduced, others (the sample rate
-// converters that feed DMA outputs) are left out and logged.
+// The DSP effects image on the host's global processor (GP): the title's DSOUND GP program and its effects image run
+// on xemu's DSP56300 interpreter and DSP DMA unit (third_party/xemu-dsp), as the console runs them.
+//
+// The GP program is DSOUND's own (passed in from the XBE). It clears X and Y memory, then each frame waits for the
+// frame interrupt, reads a command block from scratch 0x800, runs the effects chain at P:0x171 and DMAs the speaker
+// bins out. The command block is the image's own header: DSOUND copies the decrypted image to the start of GP scratch,
+// and on the first frame the program DMAs the effects' code to P:0x171 and their state to X:0x80. A mix bin b is X
+// memory 0x1400 + b * 0x20 to read and 0xC00 + b * 0x20 to write, the same storage; the voice processor writes all 32
+// fresh each frame and the speaker bins 0..5 are read back after it.
+//
+// The title changes effect state while it runs (SetEffectData into each effect's state segment in guest memory): each
+// frame a word the title changed goes into X memory, then X memory goes back to the segment for the title to read.
 #include "xdk/dsp_image.h"
 
 #include <algorithm>
@@ -12,34 +18,32 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
-#include <string>
 
 #include "core/log.h"
 #include "kernel/kernel.h"
+
+extern "C" {
+#include "dsp_dma.h"
+#include "interp/dsp_cpu.h"
+}
 
 using namespace kernel;
 
 namespace dsp {
 namespace {
 
-constexpr uint32_t kFrame = 32;  // samples the DSP runs each effect on at once
-using Buffer = std::array<float, kFrame>;
-
-// X memory addresses
-constexpr uint32_t kBinRead = 0x1400;
-constexpr uint32_t kBinWrite = 0xC00;
-constexpr uint32_t kBinStride = 0x20;
+constexpr uint32_t kFrame = 32;     // samples the GP runs at once
 constexpr uint32_t kSpeakers = 6;
+constexpr uint32_t kProgramWords = 0x173;  // the GP program, up to the effects chain's entry
+constexpr uint32_t kChainEntry = 0x171;    // P address the program loads the effects to and calls each frame
+constexpr uint32_t kStateBase = 0x80;      // X address the program loads the effects' state to
+constexpr long kFrameLimit = 2000000;      // instructions a frame may take before it is given up
 
+// image header (the GP program's command block): code words, state offset in the image, state words
+constexpr size_t kStateOffset = 0x808;
 // effect descriptor entry: {code, code bytes, state, state bytes, Y, Y bytes, scratch, scratch bytes}
 constexpr size_t kEntryBytes = 32;
 constexpr size_t kKeyBytes = 8;
-
-// state words of every effect
-constexpr uint32_t kFlags = 4;
-constexpr uint32_t kFirstPointer = 5;
-constexpr uint32_t kAddToOutput = 2;  // flag bit 1: outputs are added to, not overwritten
 
 // Image cipher (DSOUND's key schedule and block routine): a 64 bit LFSR with taps 0, 2, 3 and 63
 struct Lfsr {
@@ -77,439 +81,263 @@ void Decrypt(const uint8_t* key, uint8_t* data, size_t n) {
     }
 }
 
-enum class Kind { None, Gain, Mixer, Filter, Reverb, Crosstalk };
-
-// FNV-1a of the decrypted code with word 1, the effect's state address, left out
-uint64_t CodeHash(const std::vector<uint8_t>& code) {
-    uint64_t h = 0xCBF29CE484222325ull;
-    for (size_t i = 0; i < code.size(); i++) {
-        uint8_t b = i >= 4 && i < 8 ? 0 : code[i];
-        h = (h ^ b) * 0x100000001B3ull;
-    }
-    return h;
-}
-
-Kind KindOf(uint64_t hash) {
-    switch (hash) {
-        case 0xDDD7C789A714E88Bull: return Kind::Gain;       // 36 words
-        case 0xFA00AFA73549BF9Bull: return Kind::Mixer;      // 42 words
-        case 0xA8ACC4A41FE77751ull: return Kind::Filter;     // 48 words
-        case 0x13CF05D0E014E22Eull: return Kind::Reverb;     // 1211 words
-        case 0xF1E0A321578CFED9ull: return Kind::Crosstalk;  // 116 words
-        default: return Kind::None;
-    }
-}
-
-// a 24 bit fraction
-float Frac(uint32_t word) { return float(int32_t(word << 8)) / 2147483648.0f; }
-// the DSP's limiter on a write to memory
-float Limit(float x) { return std::clamp(x, -1.0f, 1.0f); }
-
-// The XDK's I3DL2 reverb as its DSP program runs it: a 24 kHz core, delays in samples at that rate
-struct Reverb {
-    struct Pole {
-        float a = 0, b = 0, z = 0;
-        float Run(float x) { return z = a * z + b * x + 1e-20f; }  // the offset keeps silence out of denormals
-    };
-    struct Line {
-        std::vector<float> s;
-        uint32_t w = 0;
-        // a delay of the whole line reads its oldest sample
-        float At(uint32_t delay) const { return s[(w + s.size() - delay % s.size()) % s.size()]; }
-        void Put(float x) {
-            s[w] = x;
-            w = (w + 1) % uint32_t(s.size());
-        }
-    };
-    struct Params {
-        uint32_t refl, tap[4], in[4], chain[8], comb[4], echo;
-        float early[4], late, diff[8], rest, cross;
-        Pole in_lp, chain_lp[3], loop_lp[4], echo_lp[2];
-    };
-    static constexpr int kLen[14] = {6000, 6000, 6000, 6000, 680, 612, 640, 720, 1392, 1684, 2044, 2476, 24000, 24000};
-    Line line[14];
-    Params now, next;
-    bool on = false, pending = false;
-    float fade = 1, held[4] = {};
-    uint32_t tick = 0;
-
-    Reverb() {
-        for (int i = 0; i < 14; i++) line[i].s.assign(kLen[i], 0.0f);
-    }
-    static float Lin(float mb) { return std::pow(10.0f, mb / 2000.0f); }
-    // y = a * y1 + b * x: mb millibels at 0 Hz, hf more at ref Hz
-    static Pole Design(int mb, int hf, float ref, float rate) {
-        Pole p;
-        if (mb <= -10000) return p;
-        // 1.0 is past the DSP's fractions and comes out as -1
-        p.b = mb ? Lin(float(mb)) : -1;
-        if (hf >= 0) return p;
-        p.b = Lin(float(mb));
-        float g = Lin(2.0f * hf), c = std::cos(6.2831853f * ref / rate);
-        p.a = (1 - g * c - std::sqrt(2 * g * (1 - c) - g * g * (1 - c * c))) / (1 - g);
-        p.b *= 1 - p.a;
-        return p;
-    }
-    // DSI3DL2LISTENER as 12 floats, the library's own conversion
-    void Set(const float* p) {
-        static const float kGain[4] = {0.57f, 0.52f, 0.54f, 0.6f}, kTap[4] = {0.1052f, 0.0673f, 0.1737f, 0.2404f};
-        static const float kComb[4] = {0.2469f, 0.2209f, 0.2311f, 0.2608f};
-        static const float kCombBase[4] = {0.003651f, 0.003515f, 0.003673f, 0.003946f};
-        static const float kChain[8] = {0.040023f, 0.288186f, 0.603764f, 0.851905f,
-                                        0.021224f, 0.37542f,  0.623583f, 0.759229f};
-        static const float kSign[8] = {1, -1, -1, 1, 1, 1, -1, -1};
-        static const int kInput[4] = {0, 58, 134, 232};
-        auto al = [](int n) { return (n + 1) & ~3; };
-        // taps are read in blocks of 4 samples, 16 back at least
-        auto tap = [](int n) { return uint32_t(std::max((n + 3) & ~3, 16)); };
-        float decay = std::max(p[3], 0.1f), ratio = std::max(p[4], 0.1f), d = std::clamp(p[9] * 0.01f, 0.0f, 1.0f);
-        float sc = std::clamp((2 - p[10] * 0.01f) * (decay - 1) * 5, 1.0f, 60.0f);
-        float f = sc >= 2.5f ? 1.0f : (sc - 0.8f) * 0.5882353f;
-        // a loop of n samples loses 60 dB in the decay time, high frequencies sooner by the ratio
-        auto loop = [&](int n) {
-            float x = n / 24000.0f / decay * -6000.0f;
-            int lf = int(x), hf = int(ratio < 1 ? x / ratio : x);
-            return Design(lf, hf - lf, p[11], 24000);
-        };
-        Params q;
-        q.in_lp = Design(0, int(p[1]), p[11], 48000);
-        int refl = al(int(p[6] * 24000)), rev = int(p[8] * 24000), echo = int(f * 24000), prev = 0;
-        q.refl = tap(refl);
-        q.late = Lin(p[7] + p[0]);
-        for (int k = 0; k < 4; k++) {
-            q.early[k] = Lin(p[5] + p[0]) * kGain[k];
-            q.tap[k] = tap(refl + al(int(rev * kTap[k])));
-            q.in[k] = tap(refl + al(rev) + kInput[k]);
-            q.comb[k] = tap(std::min(al(int((p[8] * kComb[k] + kCombBase[k]) * 24000)), kLen[4 + k] - 1));
-            q.loop_lp[k] = loop(kLen[8 + k]);
-            // echo times count from the input, a stage of the chain holds 250 ms
-            int a = al(int(f * kChain[k] * 24000)), b = al(int(f * kChain[4 + k] * 24000)), m = std::max(a, b) - prev;
-            float r = m > 5999 ? 5999.0f / m : 0;
-            q.chain[k * 2] = tap(r ? al(int((a - prev) * r)) : a - prev);
-            q.chain[k * 2 + 1] = tap(r ? al(int((b - prev) * r)) : b - prev);
-            prev = b;
-        }
-        q.echo = tap(std::min(al(echo), 23999));
-        for (int k = 0; k < 3; k++) q.chain_lp[k] = loop(echo >> 2);
-        q.echo_lp[0] = q.echo_lp[1] = loop(echo);
-        for (int k = 0; k < 8; k++) q.diff[k] = d * kSign[k];
-        q.rest = d > 0 ? 1 - d : -1;
-        q.cross = 0.2f * d;
-        // a change fades out, swaps, fades in
-        (on ? next : now) = q;
-        pending = on;
-        on = true;
-    }
-    // one 24 kHz sample in, front left, front right, back left, back right out
-    void Frame(float x, float o[4]) {
-        static const float kFeed[4] = {-0.4f, 0.4f, -0.4f, -0.4f};
-        Params& q = now;
-        Line* l = line;
-        float t = l[0].At(q.refl), e[4], in[4], c[8], u[4], sum = 0;
-        for (int k = 0; k < 4; k++) {
-            e[k] = t + l[0].At(q.tap[k]) + kFeed[k] * l[4 + k].At(q.comb[k]);
-            in[k] = l[0].At(q.in[k]);
-            c[k * 2] = l[k].At(q.chain[k * 2]);
-            c[k * 2 + 1] = l[k].At(q.chain[k * 2 + 1]);
-        }
-        // the echoes, front and back
-        float sa = c[1] + c[2] + c[4] + c[7], sb = c[0] + c[3] + c[5] + c[6];
-        float ea = q.rest * sa + l[12].At(q.echo), eb = q.rest * sb + l[13].At(q.echo);
-        for (int j = 0; j < 4; j++)
-            sum += u[j] = l[8 + j].At(0) + q.diff[j * 2] * in[j & 1 ? 2 : 0] + q.diff[j * 2 + 1] * in[j & 1 ? 3 : 1];
-        for (int j = 0; j < 4; j++) {
-            o[j] = q.early[j] * e[j] + q.late * u[j] + q.late * 0.5f * (j < 2 ? ea : eb);
-            l[4 + j].Put(e[j]);
-            l[8 + j].Put(q.loop_lp[j].Run(u[j] - 0.5f * sum + q.cross * (sa + sb)));
-        }
-        l[0].Put(x);
-        for (int k = 0; k < 3; k++) l[k + 1].Put(q.chain_lp[k].Run(c[k * 2 + 1]));
-        l[12].Put(q.echo_lp[0].Run(ea));
-        l[13].Put(q.echo_lp[1].Run(eb));
-    }
-    // the input at 48 kHz, halved, filtered, every second sample run; each output sample is added twice
-    void Run(const Buffer& in, Buffer* out[4], uint32_t n) {
-        for (uint32_t i = 0; on && i < n; i++) {
-            float x = now.in_lp.Run(in[i] * 0.5f);
-            if (!(tick++ & 1)) {
-                if (pending && (fade -= 1 / 128.0f) <= 0) {
-                    now = next;
-                    pending = false;
-                    fade = 0;
-                } else if (!pending) {
-                    fade = std::min(fade + 1 / 128.0f, 1.0f);
-                }
-                float o[4];
-                Frame(x, o);
-                for (int k = 0; k < 4; k++) held[k] = o[k] * fade;
-            }
-            for (int k = 0; k < 4; k++) (*out[k])[i] = Limit((*out[k])[i] + held[k]);
-        }
-    }
-};
-
-// The crosstalk effect, per pair of channels: each side adds the other side's output 11 samples back through a
-// one pole low pass (constants the effect sets on its first run)
-struct Crosstalk {
-    static constexpr uint32_t kDelay = 11;
-    static constexpr float kPole = 0.924f;    // 0x7645A1
-    static constexpr float kFeed = -0.0585f;  // 0xF88313
-    float line[2][kDelay] = {};  // each side's output
-    float lp[2] = {};
-    uint32_t at = 0;
-
-    // in and out: left then right; cross: flag bit 1, the cross term is kept
-    void Run(const Buffer* in[2], Buffer* out[2], uint32_t frames, bool cross) {
-        for (uint32_t i = 0; i < frames; i++) {
-            lp[0] = kPole * lp[0] + kFeed * line[0][at];
-            lp[1] = kPole * lp[1] + kFeed * line[1][at];
-            float left = Limit((*in[0])[i] + lp[1]);
-            float right = Limit((*in[1])[i] + lp[0]);
-            line[0][at] = left;
-            line[1][at] = right;
-            if (!cross) {
-                left = (*in[0])[i];
-                right = (*in[1])[i];
-            }
-            (*out[0])[i] = Limit((*out[0])[i] + left);
-            (*out[1])[i] = Limit((*out[1])[i] + right);
-            at = (at + 1) % kDelay;
-        }
-    }
-};
-
-// The filter effect: a biquad whose coefficients are stored halved, run in scaling mode. Its Y memory holds the
-// last two inputs and the last two outputs at full scale; the output buffer gets the half scale result.
-struct Biquad {
-    float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-
-    // c: b0, b1, b2, a1, a2 as the state holds them
-    float Run(const float c[5], float x) {
-        float half = c[0] * x + c[1] * x1 + c[2] * x2 + c[3] * y1 + c[4] * y2;
-        x2 = x1;
-        x1 = x;
-        y2 = y1;
-        y1 = Limit(2 * half);
-        return half;
-    }
-};
-
-struct Effect {
-    Kind kind = Kind::None;
-    uint32_t state = 0;  // guest address of its state words
-    Crosstalk crosstalk[2];  // its two pairs
-    Biquad biquad;
-};
-
-std::vector<Effect> g_effects;
-std::map<uint32_t, Buffer> g_x;  // X memory buffers by address, as the effects name them
-Reverb g_reverb;                 // the image's I3DL2 reverb, driven by SetI3DL2Listener
-int32_t g_reverb_index = -1;
-
-uint32_t Word(const Effect& e, uint32_t i) { return R32(e.state + i * 4) & 0xFFFFFF; }
-
-// the buffer at an X memory address; a bin's write address is its read address
-Buffer& At(uint32_t address) {
-    if (address >= kBinWrite && address < kBinRead) address += kBinRead - kBinWrite;
-    return g_x[address];
-}
-Buffer& Pointer(const Effect& e, uint32_t i) { return At(Word(e, kFirstPointer + i)); }
-
-// one input to up to 8 outputs, a gain each: pointers in, out x8, then the output count and the gains
-void RunGain(const Effect& e, uint32_t n) {
-    constexpr uint32_t kOutputs = 1;
-    constexpr uint32_t kCount = 14;
-    constexpr uint32_t kGains = 15;
-    constexpr uint32_t kMaxOutputs = 8;
-    const Buffer& in = Pointer(e, 0);
-    bool add = Word(e, kFlags) & kAddToOutput;
-    uint32_t count = std::min(Word(e, kCount), kMaxOutputs);
-    for (uint32_t k = 0; k < count; k++) {
-        Buffer& out = Pointer(e, kOutputs + k);
-        float g = Frac(Word(e, kGains + k));
-        for (uint32_t i = 0; i < n; i++) out[i] = Limit((add ? out[i] : 0) + g * in[i]);
-    }
-}
-
-// out = out + g0 * in0 + g1 * in1, saturating; without flag bit 1 the output and in0 are not read
-void RunMixer(const Effect& e, uint32_t n) {
-    constexpr uint32_t kGain0 = 8;
-    constexpr uint32_t kGain1 = 9;
-    const Buffer& in0 = Pointer(e, 0);
-    const Buffer& in1 = Pointer(e, 1);
-    Buffer& out = Pointer(e, 2);
-    bool add = Word(e, kFlags) & kAddToOutput;
-    float g0 = Frac(Word(e, kGain0));
-    float g1 = Frac(Word(e, kGain1));
-    for (uint32_t i = 0; i < n; i++) {
-        float sum = g1 * in1[i];
-        if (add) sum += out[i] + g0 * in0[i];
-        out[i] = Limit(sum);
-    }
-}
-
-// input and output pointers, then the five coefficients
-void RunFilter(Effect& e, uint32_t n) {
-    constexpr uint32_t kCoefficients = 7;
-    const Buffer& in = Pointer(e, 0);
-    Buffer& out = Pointer(e, 1);
-    bool add = Word(e, kFlags) & kAddToOutput;
-    float c[5];
-    for (uint32_t k = 0; k < 5; k++) c[k] = Frac(Word(e, kCoefficients + k));
-    for (uint32_t i = 0; i < n; i++) {
-        float y = e.biquad.Run(c, in[i]);
-        out[i] = Limit((add ? out[i] : 0) + y);
-    }
-}
-
-// input pointer 0 (the second is never read), outputs front left, front right, back left, back right
-void RunReverb(const Effect& e, uint32_t n) {
-    Buffer* out[4];
-    for (uint32_t k = 0; k < 4; k++) out[k] = &Pointer(e, 2 + k);
-    g_reverb.Run(Pointer(e, 0), out, n);
-}
-
-// two pairs: inputs 0, 1 and 2, 3, outputs 4, 5 and 6, 7
-void RunCrosstalk(Effect& e, uint32_t n) {
-    bool cross = Word(e, kFlags) & kAddToOutput;
-    for (uint32_t p = 0; p < 2; p++) {
-        const Buffer* in[2] = {&Pointer(e, p * 2), &Pointer(e, p * 2 + 1)};
-        Buffer* out[2] = {&Pointer(e, 4 + p * 2), &Pointer(e, 4 + p * 2 + 1)};
-        e.crosstalk[p].Run(in, out, n, cross);
-    }
-}
-
-// An effect the host does not reproduce (an echo, a distortion, a rate converter...) passes its first input to its
-// first output unchanged, so what the title routes through it is still heard. CMR's co-driver goes through one on
-// the way to the centre speaker; silenced, his calls were lost.
-void RunPassThrough(const Effect& e, uint32_t n) {
-    uint32_t from = Word(e, kFirstPointer), to = Word(e, kFirstPointer + 1);
-    if (!from || !to || from == to) return;
-    const Buffer& in = At(from);
-    Buffer& out = At(to);
-    if (&in == &out) return;
-    bool add = Word(e, kFlags) & kAddToOutput;
-    for (uint32_t i = 0; i < n; i++) out[i] = Limit((add ? out[i] : 0) + in[i]);
-}
-
-void RunEffect(Effect& e, uint32_t index, uint32_t n) {
-    switch (e.kind) {
-        case Kind::Gain: RunGain(e, n); break;
-        case Kind::Mixer: RunMixer(e, n); break;
-        case Kind::Filter: RunFilter(e, n); break;
-        case Kind::Reverb:
-            if (int32_t(index) == g_reverb_index) RunReverb(e, n);
-            break;
-        case Kind::Crosstalk: RunCrosstalk(e, n); break;
-        case Kind::None: RunPassThrough(e, n); break;
-    }
-}
-
-const char* KindName(Kind k) {
-    switch (k) {
-        case Kind::Gain: return "gain";
-        case Kind::Mixer: return "mixer";
-        case Kind::Filter: return "filter";
-        case Kind::Reverb: return "reverb";
-        case Kind::Crosstalk: return "crosstalk";
-        case Kind::None: break;
-    }
-    return "passed through";
-}
-
 uint32_t U32(const std::vector<uint8_t>& img, size_t at) {
     uint32_t v = 0;
     if (at + 4 <= img.size()) std::memcpy(&v, &img[at], 4);
     return v;
 }
 
+// 24 bit fractions
+float Frac(uint32_t word) { return float(int32_t(word << 8)) / 2147483648.0f; }
+uint32_t Word(float x) {
+    x = std::clamp(x, -1.0f, 8388607.0f / 8388608.0f);
+    return uint32_t(int32_t(std::lrint(x * 8388608.0f))) & 0xFFFFFF;
+}
+
+// an effect's state in X memory and in its guest segment
+struct Effect {
+    uint32_t x = 0;      // X address
+    uint32_t guest = 0;  // the segment
+    uint32_t words = 0;
+    std::vector<uint32_t> shadow;  // the segment as last synced, to see what the title wrote since
+};
+
+struct Gp {
+    dsp_core_t core;
+    DSPDMAState dma;
+    std::vector<uint8_t> scratch;
+    uint32_t interrupts = 0;
+    bool halt = false;
+};
+
+Gp* g_gp = nullptr;  // large: allocated once
+bool g_loaded = false;
+std::vector<Effect> g_effects;
+
+// a block of frames: the bins in, the speakers out of the last block (one block of latency)
+float g_in[kFrame][kBins];
+float g_out[kFrame][kSpeakers];
+uint32_t g_at = 0;
+
+// peripherals as the MCPX GP has them: frame and DMA interrupts, halt, the DMA unit
+constexpr uint32_t kStartFrame = 1 << 1;
+constexpr uint32_t kDmaEol = 1 << 7;
+uint32_t ReadPeripheral(dsp_core_t*, uint32_t address) {
+    switch (address) {
+        case 0xFFFFB3: return 0;  // cycle counter, read for timing only
+        case 0xFFFFC5: return g_gp->interrupts | (g_gp->dma.eol ? kDmaEol : 0);
+        case 0xFFFFD4: return dsp_dma_read(&g_gp->dma, DMA_NEXT_BLOCK);
+        case 0xFFFFD5: return dsp_dma_read(&g_gp->dma, DMA_START_BLOCK);
+        case 0xFFFFD6: return dsp_dma_read(&g_gp->dma, DMA_CONTROL);
+        case 0xFFFFD7: return dsp_dma_read(&g_gp->dma, DMA_CONFIGURATION);
+    }
+    return 0;
+}
+void WritePeripheral(dsp_core_t*, uint32_t address, uint32_t value) {
+    switch (address) {
+        case 0xFFFFC4:
+            if (value & 1) g_gp->halt = true;  // the program idles until the next frame
+            break;
+        case 0xFFFFC5:
+            g_gp->interrupts &= ~value;
+            if (value & kDmaEol) g_gp->dma.eol = false;
+            break;
+        case 0xFFFFD4: dsp_dma_write(&g_gp->dma, DMA_NEXT_BLOCK, value); break;
+        case 0xFFFFD5: dsp_dma_write(&g_gp->dma, DMA_START_BLOCK, value); break;
+        case 0xFFFFD6: dsp_dma_write(&g_gp->dma, DMA_CONTROL, value); break;
+        case 0xFFFFD7: dsp_dma_write(&g_gp->dma, DMA_CONFIGURATION, value); break;
+    }
+}
+uint32_t ReadMemory(void*, int space, uint32_t address) { return dsp56k_read_memory(&g_gp->core, space, address); }
+void WriteMemory(void*, int space, uint32_t address, uint32_t value) {
+    dsp56k_write_memory(&g_gp->core, space, address, value);
+}
+void Scratch(void*, uint8_t* p, uint32_t address, size_t n, bool write) {
+    std::vector<uint8_t>& s = g_gp->scratch;
+    if (address > s.size() || n > s.size() - address) {
+        LOG_FIRST(4, "dsound: GP scratch %X + %zX past its end", address, n);
+        if (!write) std::memset(p, 0, n);
+        return;
+    }
+    if (write) std::memcpy(&s[address], p, n);
+    else std::memcpy(p, &s[address], n);
+}
+// the output FIFOs feed the encode processor, not run here: what goes out is read from the speaker bins
+void Fifo(void*, uint8_t* p, unsigned index, size_t n, bool write) {
+    LOG_FIRST(4, "dsound: GP %s FIFO %u, %zu bytes", write ? "writes" : "reads", index, n);
+    if (!write) std::memset(p, 0, n);
+}
+
+// runs the program until it halts for the next frame
+long RunFrame() {
+    Gp& gp = *g_gp;
+    gp.interrupts |= kStartFrame;
+    gp.halt = false;
+    long n = 0;
+    while (!gp.halt && n < kFrameLimit) {
+        dsp56k_execute_instruction(&gp.core);
+        n++;
+    }
+    return n;
+}
+
+void SyncIn() {
+    for (Effect& e : g_effects)
+        for (uint32_t i = 0; i < e.words; i++) {
+            uint32_t v = R32(e.guest + i * 4);
+            if (v == e.shadow[i]) continue;
+            e.shadow[i] = v;
+            g_gp->core.xram[(e.x + i) % DSP_XRAM_SIZE] = v & 0xFFFFFF;
+        }
+}
+void SyncOut() {
+    for (Effect& e : g_effects)
+        for (uint32_t i = 0; i < e.words; i++) {
+            uint32_t v = g_gp->core.xram[(e.x + i) % DSP_XRAM_SIZE];
+            e.shadow[i] = v;
+            W32(e.guest + i * 4, v);
+        }
+}
+
+// DSPWATCH set: each change to an effect's first 20 state words, as the title and the effect change them
+void Watch() {
+    static const bool watch = std::getenv("DSPWATCH") != nullptr;
+    if (!watch) return;
+    static std::vector<std::array<uint32_t, 20>> seen;
+    seen.resize(g_effects.size());
+    for (uint32_t k = 0; k < g_effects.size(); k++) {
+        std::array<uint32_t, 20> now;
+        for (uint32_t i = 0; i < 20; i++) now[i] = g_gp->core.xram[(g_effects[k].x + i) % DSP_XRAM_SIZE];
+        if (now == seen[k]) continue;
+        seen[k] = now;
+        char w[200] = "";
+        for (uint32_t i = 0; i < 20; i++) snprintf(w + std::strlen(w), sizeof(w) - std::strlen(w), " %06X", now[i]);
+        LOGI("dsound: effect %u state%s", k, w);
+    }
+}
+
+void Block() {
+    Gp& gp = *g_gp;
+    for (uint32_t b = 0; b < kBins; b++)
+        for (uint32_t i = 0; i < kFrame; i++) gp.core.mixbuffer[b * kFrame + i] = Word(g_in[i][b]);
+    SyncIn();
+    long n = RunFrame();
+    if (n >= kFrameLimit) LOG_FIRST(2, "dsound: GP frame not finished in %ld instructions, pc %X", n, gp.core.pc);
+    SyncOut();
+    Watch();
+    for (uint32_t b = 0; b < kSpeakers; b++)
+        for (uint32_t i = 0; i < kFrame; i++) g_out[i][b] = Frac(gp.core.mixbuffer[b * kFrame + i]);
+}
+
 }  // namespace
 
-void Load(const std::vector<uint8_t>& img, size_t table, const std::vector<uint32_t>& states, int32_t reverb) {
+void Load(const std::vector<uint8_t>& image, size_t table, const std::vector<uint32_t>& states, int32_t reverb,
+          const std::vector<uint8_t>& program) {
+    g_loaded = false;
     g_effects.clear();
-    g_x.clear();
-    g_reverb = Reverb();
-    g_reverb_index = reverb;
+    if (program.size() < kProgramWords * 4) {
+        LOGE("dsound: no GP program, the effects image is not run");
+        return;
+    }
     uint32_t count = uint32_t(states.size());
     size_t keys_at = table + 8 + count * kEntryBytes;
-    if (keys_at + count * kKeyBytes > img.size()) return;
+    if (keys_at + count * kKeyBytes > image.size()) return;
+    // the image as DSOUND hands it to the GP: every effect's code decrypted in place
+    std::vector<uint8_t> img = image;
     std::vector<uint8_t> keys(img.begin() + long(keys_at), img.begin() + long(keys_at + count * kKeyBytes));
     std::array<uint8_t, 8> master = MasterKey();
     Decrypt(master.data(), keys.data(), keys.size());
-    std::string kinds;
+    size_t scratch = img.size();
     for (uint32_t i = 0; i < count; i++) {
         size_t entry = table + 8 + i * kEntryBytes;
-        uint32_t code_at = U32(img, entry);
-        uint32_t code_bytes = U32(img, entry + 4);
+        uint32_t code_at = U32(img, entry), code_bytes = U32(img, entry + 4);
+        uint32_t state_at = U32(img, entry + 8), state_bytes = U32(img, entry + 12);
+        scratch = std::max<size_t>(scratch, size_t(U32(img, entry + 24)) + U32(img, entry + 28));
+        if (code_at <= img.size() && code_bytes <= img.size() - code_at)
+            Decrypt(&keys[i * kKeyBytes], &img[code_at], code_bytes);
         Effect e;
-        e.state = states[i];
-        if (code_at <= img.size() && code_bytes <= img.size() - code_at) {
-            std::vector<uint8_t> code(img.begin() + code_at, img.begin() + code_at + code_bytes);
-            Decrypt(&keys[i * kKeyBytes], code.data(), code.size());
-            e.kind = KindOf(CodeHash(code));
-            // DSPDUMP set: each effect's decrypted code and first 64 state words beside the exe, for study offline
-            if (std::getenv("DSPDUMP")) {
-                char name[64];
-                snprintf(name, sizeof name, "dsp_effect_%02u.bin", i);
-                if (FILE* f = std::fopen(name, "wb")) {
-                    std::fwrite(code.data(), 1, code.size(), f);
-                    std::fclose(f);
-                }
-                snprintf(name, sizeof name, "dsp_state_%02u.bin", i);
-                if (FILE* f = std::fopen(name, "wb")) {
-                    for (uint32_t k = 0; k < 64; k++) {
-                        uint32_t w = R32(states[i] + k * 4);
-                        std::fwrite(&w, 4, 1, f);
-                    }
-                    std::fclose(f);
-                }
+        e.x = kStateBase + (state_at - U32(img, kStateOffset)) / 4;
+        e.guest = states[i];
+        e.words = state_bytes / 4;
+        e.shadow.resize(e.words);
+        for (uint32_t k = 0; k < e.words; k++) e.shadow[k] = R32(e.guest + k * 4);
+        g_effects.push_back(std::move(e));
+        // DSPDUMP set: each effect's decrypted code and first 64 state words beside the exe, for study offline
+        if (std::getenv("DSPDUMP") && code_at <= img.size() && code_bytes <= img.size() - code_at) {
+            char name[64];
+            snprintf(name, sizeof name, "dsp_effect_%02u.bin", i);
+            if (FILE* f = std::fopen(name, "wb")) {
+                std::fwrite(&img[code_at], 1, code_bytes, f);
+                std::fclose(f);
             }
-            if (e.kind == Kind::None) {
-                char w[160] = "";
-                for (uint32_t k = 0; k < 12; k++)
-                    snprintf(w + std::strlen(w), sizeof(w) - std::strlen(w), " %06X", R32(states[i] + k * 4) & 0xFFFFFF);
-                LOGI("dsound: effect %u, %u code words, hash %016llX, state%s", i, code_bytes / 3,
-                     (unsigned long long)CodeHash(code), w);
+            snprintf(name, sizeof name, "dsp_state_%02u.bin", i);
+            if (FILE* f = std::fopen(name, "wb")) {
+                for (uint32_t k = 0; k < 64; k++) {
+                    uint32_t w = R32(states[i] + k * 4);
+                    std::fwrite(&w, 4, 1, f);
+                }
+                std::fclose(f);
             }
         }
-        kinds += " " + std::to_string(i) + " " + KindName(e.kind) + ",";
-        g_effects.push_back(e);
     }
-    LOGR("dsound: effects image, reverb %d, effects%s", reverb, kinds.c_str());
+    if (!g_gp) g_gp = new Gp();
+    Gp& gp = *g_gp;
+    // the program's own buffers past the effects': the speaker rings at 0x8000, the FX bins at 0xB000
+    gp.scratch.assign(std::max<size_t>(scratch, 0x10000) + 0x1000, 0);
+    std::memcpy(gp.scratch.data(), img.data(), img.size());
+    dsp56k_reset_cpu(&gp.core);
+    gp.core.is_gp = true;
+    gp.core.read_peripheral = ReadPeripheral;
+    gp.core.write_peripheral = WritePeripheral;
+    gp.dma = DSPDMAState{};
+    gp.dma.mem_read = ReadMemory;
+    gp.dma.mem_write = WriteMemory;
+    gp.dma.scratch_rw = Scratch;
+    gp.dma.fifo_rw = Fifo;
+    gp.interrupts = 0;
+    for (uint32_t i = 0; i < kProgramWords; i++) {
+        uint32_t w;
+        std::memcpy(&w, &program[i * 4], 4);
+        gp.core.pram[i] = w & 0xFFFFFF;
+    }
+    gp.core.pc = 0;
+    // the program starts: clears memory, sets its DMA lists, waits for the first frame
+    long n = RunFrame();
+    if (!gp.halt) {
+        LOGE("dsound: the GP program did not start (pc %X after %ld instructions)", gp.core.pc, n);
+        return;
+    }
+    // a silent first frame downloads the effects before the title can change their state
+    std::memset(gp.core.mixbuffer, 0, sizeof gp.core.mixbuffer);
+    RunFrame();
+    if (!gp.halt || gp.core.xram[4]) {
+        LOGE("dsound: the GP program did not load the effects image (pc %X)", gp.core.pc);
+        return;
+    }
+    SyncOut();
+    std::memset(g_in, 0, sizeof g_in);
+    std::memset(g_out, 0, sizeof g_out);
+    g_at = 0;
+    g_loaded = true;
+    LOGR("dsound: GP program and effects image running, %u effects, reverb %d, scratch %zu KB", count, reverb,
+         gp.scratch.size() / 1024);
 }
 
-bool Loaded() { return !g_effects.empty(); }
+bool Loaded() { return g_loaded; }
 
-void SetListener(const float* p) { g_reverb.Set(p); }
+void SetListener(const float*) {
+    // DSOUND converts the listener to the reverb effect's state; that conversion is not reproduced yet
+    LOG_FIRST(1, "dsound: I3DL2 listener set; the GP reverb keeps the image's settings");
+}
 
 void Run(float* bins, uint32_t frames) {
-    for (uint32_t start = 0; start < frames; start += kFrame) {
-        uint32_t n = std::min(kFrame, frames - start);
-        float* frame = bins + size_t(start) * kBins;
-        // the voice processor writes every bin fresh each frame
-        for (uint32_t b = 0; b < kBins; b++) {
-            Buffer& bin = At(kBinRead + b * kBinStride);
-            for (uint32_t i = 0; i < n; i++) bin[i] = Limit(frame[i * kBins + b]);
-        }
-        // DSPWATCH set: each change to an effect's first 20 state words, as the title sets effect data while it runs
-        static const bool watch = std::getenv("DSPWATCH") != nullptr;
-        if (watch) {
-            static std::vector<std::array<uint32_t, 20>> seen;
-            seen.resize(g_effects.size());
-            for (uint32_t k = 0; k < g_effects.size(); k++) {
-                std::array<uint32_t, 20> now;
-                for (uint32_t i = 0; i < 20; i++) now[i] = Word(g_effects[k], i);
-                if (now == seen[k]) continue;
-                seen[k] = now;
-                char w[200] = "";
-                for (uint32_t i = 0; i < 20; i++) snprintf(w + std::strlen(w), sizeof(w) - std::strlen(w), " %06X", now[i]);
-                LOGI("dsound: effect %u state%s", k, w);
-            }
-        }
-        for (uint32_t k = 0; k < g_effects.size(); k++) RunEffect(g_effects[k], k, n);
-        for (uint32_t b = 0; b < kSpeakers; b++) {
-            const Buffer& bin = At(kBinRead + b * kBinStride);
-            for (uint32_t i = 0; i < n; i++) frame[i * kBins + b] = bin[i];
+    for (uint32_t i = 0; i < frames; i++) {
+        float* frame = bins + size_t(i) * kBins;
+        for (uint32_t b = 0; b < kBins; b++) g_in[g_at][b] = frame[b];
+        for (uint32_t b = 0; b < kSpeakers; b++) frame[b] = g_out[g_at][b];
+        if (++g_at == kFrame) {
+            Block();
+            g_at = 0;
         }
     }
 }
