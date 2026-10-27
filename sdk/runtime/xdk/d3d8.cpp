@@ -1257,14 +1257,19 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 namespace {
 
-// XBE_DRAW_CALLERS=<vertex shader handle, hex>: the code behind draws with that shader, each distinct chain of
-// return addresses on the guest stack logged once (words just after a call instruction)
-void LogCallers(X86Context& ctx, const char* what) {
+// XBE_DRAW_CALLERS=<vertex shader handle, hex>: the code behind draws with that shader, and behind runs of recorded
+// push buffers holding one, each distinct chain of return addresses on the guest stack logged once (words just after a
+// call instruction)
+uint32_t CallersShader() {
     static const uint32_t want = [] {
         const char* e = std::getenv("XBE_DRAW_CALLERS");
         return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
     }();
-    if (!want || g_state.vs_handle != want) return;
+    return want;
+}
+
+void LogChain(X86Context& ctx, const char* what) {
+    const uint32_t want = CallersShader();
     auto called = [](uint32_t r) {
         if (r < 0x11000 || r >= 0x400000) return false;
         const uint8_t* p = static_cast<const uint8_t*>(HostPtr(r));
@@ -1284,6 +1289,10 @@ void LogCallers(X86Context& ctx, const char* what) {
     }
     if (seen.size() < 64 && seen.insert(chain).second)
         LOGI("d3d: %s with vs %08X from%s", what, want, chain.c_str());
+}
+
+void LogCallers(X86Context& ctx, const char* what) {
+    if (CallersShader() && g_state.vs_handle == CallersShader()) LogChain(ctx, what);
 }
 
 }  // namespace
@@ -1818,6 +1827,12 @@ HLE_STDCALL(D3DDevice_RunPushBuffer, 2) {
                                                                            : g_recordings.end();
     if (it != g_recordings.end()) {
         LOG_FIRST(4, "d3d: RunPushBuffer %08X replays recording %u, %zu draws", a[0], it->first, it->second.size());
+        if (CallersShader())
+            for (const Recorded& r : it->second)
+                if (!r.clear && r.state.vs_handle == CallersShader()) {
+                    LogChain(ctx, "RunPushBuffer");
+                    break;
+                }
         Walk(Dev(kDevPush));
         if (g_backend)
             for (const Recorded& r : it->second) {
