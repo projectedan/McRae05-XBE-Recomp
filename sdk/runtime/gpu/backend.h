@@ -41,6 +41,8 @@ public:
     // count, GetReport writes it to a 16 byte report once the GPU is past those draws; without them it stays pending
     virtual void ClearReport() {}
     virtual void GetReport(uint32_t /*report*/) {}
+    // between commands and while idle, on the thread that draws: results the GPU has finished (reports) go out now
+    virtual void Poll() {}
 
     // the XDK's fences and busy checks against the render thread; a backend that draws at once is never behind
     virtual uint32_t Fence() { return ++fence_; }

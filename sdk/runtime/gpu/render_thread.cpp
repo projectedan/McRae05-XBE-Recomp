@@ -216,10 +216,12 @@ public:
     }
 
     void ClearReport() override { cur_->cmds.push_back(Cmd{Op::ClearReport}); }
+    // handed over at once: the title may be polling the report for the result before its frame ends
     void GetReport(uint32_t report) override {
         Cmd c{Op::GetReport};
         c.a = report;
         cur_->cmds.push_back(c);
+        Submit();
     }
 
     uint32_t Fence() override { return uint32_t(cur_->id); }
@@ -395,12 +397,18 @@ private:
             Batch* b;
             {
                 std::unique_lock lock(m_);
-                cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+                // idle, the backend looks every millisecond for finished results the title may be polling for
+                while (!cv_.wait_for(lock, std::chrono::milliseconds(1), [&] { return stop_ || !queue_.empty(); })) {
+                    lock.unlock();
+                    inner_->Poll();
+                    lock.lock();
+                }
                 if (queue_.empty()) break;
                 b = queue_.front();
                 queue_.pop_front();
             }
             for (const Cmd& c : b->cmds) Execute(*b, c);
+            inner_->Poll();
             uint64_t id = b->id;
             b->cmds.clear();
             b->bytes.clear();

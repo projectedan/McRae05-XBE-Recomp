@@ -445,6 +445,10 @@ public:
     void ClearReport() override { counted_.clear(); }
     // done once the list being recorded, the next fence value, has run
     void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
+    // between commands: reports the GPU has finished go out now rather than at the next present, a frame later, while a
+    // title polling for them (CMR, as the sun comes into view) stalls its frames. Waiting for the GPU instead slowed
+    // every frame and CMR, which steps its game once a frame, with it
+    void Poll() override { DeliverReports(); }
 
     ID3D12Device* Device() override { return dev_.Get(); }
     ID3D12GraphicsCommandList* List() override { return cl_.Get(); }
