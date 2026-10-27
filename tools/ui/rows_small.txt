@@ -1,0 +1,2 @@
+19 32 ~JKLMNOPQRSTUVWXYZ~~~_abcd
+36 50 efghijklmnopqrstuvwxyz~~~~~~~~~
