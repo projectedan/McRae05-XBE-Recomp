@@ -14,10 +14,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "core/log.h"
 #include "kernel/kernel.h"
@@ -111,7 +113,9 @@ struct Gp {
 };
 
 Gp* g_gp = nullptr;  // large: allocated once
-bool g_loaded = false;
+// Run is called without DirectSound's lock, so the title never waits on the GP; Load and Run exclude each other here
+std::mutex g_run_lock;
+std::atomic<bool> g_loaded{false};  // read under DirectSound's lock, set under g_run_lock
 std::vector<Effect> g_effects;
 
 // a block of frames: the bins in, the speakers out of the last block (one block of latency)
@@ -190,10 +194,13 @@ void SyncIn() {
             g_gp->core.xram[(e.x + i) % DSP_XRAM_SIZE] = v & 0xFFFFFF;
         }
 }
+// only words the GP changed go back: one the title wrote while the frame ran (it no longer waits for the GP) is left for
+// the next SyncIn rather than overwritten with the old value
 void SyncOut() {
     for (Effect& e : g_effects)
         for (uint32_t i = 0; i < e.words; i++) {
             uint32_t v = g_gp->core.xram[(e.x + i) % DSP_XRAM_SIZE];
+            if (v == e.shadow[i]) continue;
             e.shadow[i] = v;
             W32(e.guest + i * 4, v);
         }
@@ -233,6 +240,7 @@ void Block() {
 
 void Load(const std::vector<uint8_t>& image, size_t table, const std::vector<uint32_t>& states, int32_t reverb,
           const std::vector<uint8_t>& program) {
+    std::lock_guard<std::mutex> run(g_run_lock);
     g_loaded = false;
     g_effects.clear();
     if (program.size() < kProgramWords * 4) {
@@ -326,6 +334,8 @@ void Load(const std::vector<uint8_t>& image, size_t table, const std::vector<uin
 bool Loaded() { return g_loaded; }
 
 void Run(float* bins, uint32_t frames) {
+    std::lock_guard<std::mutex> run(g_run_lock);
+    if (!g_loaded) return;
     for (uint32_t i = 0; i < frames; i++) {
         float* frame = bins + size_t(i) * kBins;
         for (uint32_t b = 0; b < kBins; b++) g_in[g_at][b] = frame[b];

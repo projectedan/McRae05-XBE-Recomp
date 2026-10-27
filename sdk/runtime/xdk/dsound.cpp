@@ -771,7 +771,7 @@ Recorder g_recorder;
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bins;  // the output thread alone renders
     bins.assign(size_t(frames) * kBins, 0.0f);
-    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    std::unique_lock<std::recursive_mutex> lock(g_lock);
     // while recording, each voice's level, and once a second the loudest: what is playing when, by name
     bool rec = g_recorder.On();
     static std::vector<float> before;
@@ -810,7 +810,17 @@ void Render(float* out, uint32_t frames) {
     }
     static std::vector<float> sends;  // what the effects image reads, for the recording
     if (g_recorder.On()) sends = bins;
-    if (ImageLoaded()) (g_gp ? dsp::Run : dsp::legacy::Run)(bins.data(), frames);
+    // The emulated GP runs after the lock is let go: it takes about a quarter of the 10 ms block, and the title, which
+    // calls DirectSound many times a frame, waited for it, landing frames up to 3 ms early or late. It keeps the effect
+    // state in step with the title's segments itself (xdk/dsp_image.cpp). The stand-ins are quick and stay under it.
+    if (g_gp) {
+        bool loaded = dsp::Loaded();
+        lock.unlock();
+        if (loaded) dsp::Run(bins.data(), frames);
+    } else {
+        if (dsp::legacy::Loaded()) dsp::legacy::Run(bins.data(), frames);
+        lock.unlock();
+    }
     static LowPass sub_lp;
     static uint32_t sub_hz = ~0u;
     if (sub_hz != g_mix.sub_hz) sub_lp.Set(float(sub_hz = g_mix.sub_hz));
