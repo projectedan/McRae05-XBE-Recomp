@@ -12,9 +12,11 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -1253,8 +1255,42 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 // drawing
 
+namespace {
+
+// XBE_DRAW_CALLERS=<vertex shader handle, hex>: the code behind draws with that shader, each distinct chain of
+// return addresses on the guest stack logged once (words just after a call instruction)
+void LogCallers(X86Context& ctx, const char* what) {
+    static const uint32_t want = [] {
+        const char* e = std::getenv("XBE_DRAW_CALLERS");
+        return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
+    }();
+    if (!want || g_state.vs_handle != want) return;
+    auto called = [](uint32_t r) {
+        if (r < 0x11000 || r >= 0x400000) return false;
+        const uint8_t* p = static_cast<const uint8_t*>(HostPtr(r));
+        return p[-5] == 0xE8 || (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10) ||
+               (p[-3] == 0xFF && (p[-2] & 0x38) == 0x10) || (p[-6] == 0xFF && (p[-5] & 0x38) == 0x10);
+    };
+    static std::unordered_set<std::string> seen;
+    std::string chain;
+    int n = 0;
+    for (uint32_t i = 0; i < 96 && n < 10; i++) {
+        uint32_t r = R32(ctx.esp + i * 4);
+        if (!called(r)) continue;
+        char t[24];
+        std::snprintf(t, sizeof t, " %08X@+%X", r, i * 4);
+        chain += t;
+        n++;
+    }
+    if (seen.size() < 64 && seen.insert(chain).second)
+        LOGI("d3d: %s with vs %08X from%s", what, want, chain.c_str());
+}
+
+}  // namespace
+
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LogCallers(ctx, "DrawVertices");
     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
     SyncDeferred();
     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
@@ -1263,6 +1299,7 @@ HLE_STDCALL(D3DDevice_DrawVertices, 3) {
 
 HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LogCallers(ctx, "DrawIndexedVertices");
     Walk(Dev(kDevPush));
     SyncDeferred();
     const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
@@ -1468,6 +1505,7 @@ void Walk(uint32_t end) {
 
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LogCallers(ctx, "DrawVerticesUP");
     Walk(Dev(kDevPush));
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
     return 0;
