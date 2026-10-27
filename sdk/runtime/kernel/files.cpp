@@ -6,6 +6,7 @@
 #include <fstream>
 #include <map>
 
+#include "app/app.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
 #include "kernel/exports.h"
@@ -275,8 +276,20 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
     // no Xbox name holds ':', and fs::path would take "D:" as a host drive
     for (auto& part : parts)
         if (part.find(':') != std::string::npos) return {};
-    if (best->first == kCdRom)
+    if (best->first == kCdRom) {
+        // mods\ beside the exe: a file there under the game's own path (mods\fonts\HelNu_16.pcf for D:\fonts\...)
+        // is read in place of the game's, from its folder or its disc image alike
+        static const fs::path mods = app::ExeDir() / "mods";
+        std::error_code ec;
+        if (fs::is_directory(mods, ec)) {
+            fs::path m = MatchCase(mods, parts);
+            if (fs::is_regular_file(m, ec)) {
+                LOG_FIRST(64, "files: %s from mods", p.c_str());
+                return {m.string()};
+            }
+        }
         if (const Disc* disc = MountedDisc()) return {{}, true, disc->Find(parts)};
+    }
     return {MatchCase(best->second, parts).string()};
 }
 
