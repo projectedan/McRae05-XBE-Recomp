@@ -155,6 +155,7 @@ struct Voice {
     int32_t bin_mb[32] = {};  // by mix bin
     std::vector<float> curve;  // rolloff
     bool is3d = false;
+    bool dialogue = false;  // speech: front left, right and centre alike, nothing else (SetBins)
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
     float rolloff = 1;  // IDirectSoundBuffer_SetRolloffFactor and the stream's, times the listener's
@@ -279,10 +280,44 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     }
 }
 
-// the console's stereo downmix of the speaker bins: back pair at -3 dB, the sub at -10 dB
-constexpr float kFold = 0.707f;
-constexpr float kLfeFold = 0.316f;     // -10 dB
-constexpr float kCentreFold = 1.41f;  // +3 dB, over the console's -3 dB: the co-driver's channel, lifted over the engine
+// The stereo downmix of the speaker bins, the console's: centre and back pair at -3 dB. The low frequency channel joins
+// low passed, as a stereo set's bass does: CMR sends its engine there near full scale and full range, and folded in
+// whole its mid range sat on the co-driver's (measured against a recording of the game, his calls stood 4 to 6 dB
+// less clear of the rest). Dialogue (see Voice::dialogue) is lifted by the remaining gap. All of it can be set in the
+// settings file (the game's mix_ options); the defaults are these.
+struct Mix {
+    float dialogue = 1.78f;  // +5 dB
+    float front = 1.0f;
+    float centre = 0.707f;
+    float back = 0.707f;
+    float sub = 0.5f;
+    uint32_t sub_hz = 180;  // 0: the whole range
+};
+Mix g_mix;
+
+// a second order low pass (RBJ), one per output side
+struct LowPass {
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    void Set(float hz) {
+        *this = LowPass();
+        if (hz <= 0) return;
+        float w = 6.2831853f * hz / float(audio::kRate), c = std::cos(w), al = std::sin(w) / (2 * 0.7071f);
+        float a0 = 1 + al;
+        b0 = (1 - c) / 2 / a0;
+        b1 = (1 - c) / a0;
+        b2 = b0;
+        a1 = -2 * c / a0;
+        a2 = (1 - al) / a0;
+    }
+    float Run(float x) {
+        float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2 + 1e-20f;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        return y;
+    }
+};
 
 // A voice with no speaker bin and no effects image plays its loudest bin on the front pair; with speaker bins the
 // crosstalk bins join their speakers and effect sends are dropped. Without the title's image nothing reads them.
@@ -604,6 +639,10 @@ void Notify(const Voice& v, uint32_t from, uint32_t to, bool stopped) {
 void MixVoice(Voice& v, float* bins, uint32_t frames) {
     Place at = Locate(v);
     Gains target = Levels(v, at);
+    if (v.dialogue && g_mix.dialogue != 1.0f) {
+        for (auto& row : target.bin)
+            for (float& g : row) g *= g_mix.dialogue;
+    }
     float itd = Itd(at.azimuth);
     if (!v.has_gain) {
         v.gain = target;
@@ -736,14 +775,22 @@ void Render(float* out, uint32_t frames) {
     static std::vector<float> sends;  // what the effects image reads, for the recording
     if (g_recorder.On()) sends = bins;
     if (dsp::Loaded()) dsp::Run(bins.data(), frames);
+    static LowPass sub_lp;
+    static uint32_t sub_hz = ~0u;
+    if (sub_hz != g_mix.sub_hz) sub_lp.Set(float(sub_hz = g_mix.sub_hz));
+    // a peak limiter instead of clipping: instant down, back up over about 100 ms
+    static float limit = 1.0f;
+    constexpr float kCeiling = 0.98f, kRelease = 0.9998f;
     for (uint32_t i = 0; i < frames; i++) {
         const float* b = &bins[size_t(i) * kBins];
-        // the low frequency channel folds in 10 dB down, as stereo downmixes that keep it do: titles route sound there
-        // that a stereo console plays (CMR's engine sends most of its non-3D level to it; without it the chase camera's
-        // engine was nearly silent, at the centre's level it drowned the rest of the mix)
-        float sub = kLfeFold * b[kSub], centre = kCentreFold * b[kCentre];
-        out[i * 2] = std::clamp(b[kFrontLeft] + centre + kFold * b[kBackLeft] + sub, -1.0f, 1.0f);
-        out[i * 2 + 1] = std::clamp(b[kFrontRight] + centre + kFold * b[kBackRight] + sub, -1.0f, 1.0f);
+        float sub = g_mix.sub * sub_lp.Run(b[kSub]), centre = g_mix.centre * b[kCentre];
+        float l = g_mix.front * b[kFrontLeft] + centre + g_mix.back * b[kBackLeft] + sub;
+        float r = g_mix.front * b[kFrontRight] + centre + g_mix.back * b[kBackRight] + sub;
+        float peak = std::max(std::fabs(l), std::fabs(r)) * limit;
+        if (peak > kCeiling) limit *= kCeiling / peak;
+        out[i * 2] = std::clamp(l * limit, -1.0f, 1.0f);
+        out[i * 2 + 1] = std::clamp(r * limit, -1.0f, 1.0f);
+        limit = std::min(1.0f, limit / kRelease);
     }
     if (g_recorder.On()) g_recorder.Add(bins.data(), sends.data(), out, frames);
 }
@@ -799,6 +846,21 @@ void SetBins(Voice& v, uint32_t mixbins) {
         v.bin_mb[v.bin[i]] = int32_t(R32(pairs + i * 8 + 4));
     }
     v.nbins = uint8_t(n);
+    // dialogue, as the XDK's samples route it: the same level on front left, right and centre, every other bin silent
+    // (CMR's co-driver; his calls and the bed under them meet on those three speakers, the mix settings tell them apart)
+    {
+        bool fl = false, fr = false, c = false, other = false;
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t b = v.bin[i];
+            int32_t mb = v.bin_mb[b];
+            if (b == kFrontLeft) fl = true;
+            else if (b == kFrontRight) fr = true;
+            else if (b == kCentre) c = true;
+            else if (mb > -10000) other = true;
+        }
+        v.dialogue = fl && fr && c && !other && v.bin_mb[kFrontLeft] == v.bin_mb[kCentre] &&
+                     v.bin_mb[kFrontRight] == v.bin_mb[kCentre];
+    }
     // each distinct bin list with its volumes (the first 48), to follow a title's routing
     {
         char t[200] = "";
@@ -1412,5 +1474,15 @@ void SetVoiceNotifications(uint32_t obj, uint32_t count, uint32_t positions) {
     for (uint32_t i = 0; positions && i < std::min<uint32_t>(count, 64); i++)
         v->notify.emplace_back(R32(positions + i * 8), R32(positions + i * 8 + 4));
     LOG_FIRST(8, "dsound: voice %08X notifies %u positions, first at %08X", obj, count, count ? R32(positions) : 0);
+}
+}  // namespace xdk
+
+namespace xdk {
+// the stereo mix from the game's settings (src/common/game_info.cpp): amplitudes, 1 as the default mix has them
+void SetMix(float dialogue, float front, float centre, float back, float sub, uint32_t sub_hz) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_mix = {dialogue, front, centre, back, sub, sub_hz};
+    LOGI("dsound: mix dialogue %.2f front %.2f centre %.2f back %.2f sub %.2f low passed at %u Hz", dialogue, front,
+         centre, back, sub, sub_hz);
 }
 }  // namespace xdk
