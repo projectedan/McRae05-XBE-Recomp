@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,7 +94,9 @@ struct State {
 };
 State g_state;
 
-const char* kTabs[] = {"DISPLAY", "GRAPHICS", "AUDIO", "OVERLAY"};
+// vsync and the audio mix stay in the settings file: the pacing wants vsync on, and the mix is fitted to the console's
+const char* kTabs[] = {"DISPLAY", "GRAPHICS", "OVERLAY"};
+constexpr int kTabCount = int(std::size(kTabs));
 
 bool Pressed(ImGuiKey key) { return ImGui::IsKeyPressed(key, true); }
 
@@ -187,11 +190,6 @@ void Display(State& st) {
         app::ApplyDisplay();
         st.changed = true;
     }
-    if (int step = Row("Vertical sync", OnOff(s.vsync))) {
-        (void)step;
-        s.vsync = !s.vsync;
-        st.changed = true;
-    }
     Heading("Rendering");
     static const std::vector<uint32_t> kPercents = {50, 67, 75, 100, 125, 150, 200};
     uint32_t rh = app::Output().height * s.render_percent / 100;
@@ -220,34 +218,6 @@ void Graphics(State& st) {
     Heading("Menus and HUD");
     if (Row("Sharper 2D", OnOff(s.sharp_2d))) {
         s.sharp_2d = !s.sharp_2d;
-        st.changed = true;
-    }
-}
-
-void Audio(State& st) {
-    Heading("Mix (100% is the console's)");
-    struct Level {
-        const char* name;
-        uint32_t* value;
-    };
-    const Level levels[] = {{"Co-driver and menus", &g_mix_dialogue},
-                            {"Front", &g_mix_front},
-                            {"Centre", &g_mix_centre},
-                            {"Surround", &g_mix_back},
-                            {"Low frequency", &g_mix_sub}};
-    char text[16];
-    for (const Level& l : levels) {
-        std::snprintf(text, sizeof text, "%u%%", *l.value);
-        if (int step = Row(l.name, text)) {
-            *l.value = uint32_t(std::clamp(int(*l.value) + step * 5, 0, 200));
-            ApplyMix();
-            st.changed = true;
-        }
-    }
-    ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.6f));
-    if (Row("Reset the mix", "")) {
-        g_mix_dialogue = g_mix_front = g_mix_centre = g_mix_back = g_mix_sub = 100;
-        ApplyMix();
         st.changed = true;
     }
 }
@@ -337,10 +307,10 @@ void Menu(State& st) {
     float tsize = g_title ? g_title->FontSize : fs * 2;
     dl->AddText(title, tsize, ImVec2(at.x + pad, at.y + (band - tsize) / 2), IM_COL32(232, 230, 226, 255), "SETTINGS.");
 
-    if (Pressed(ImGuiKey_GamepadL1) || Pressed(ImGuiKey_PageUp)) st.tab = (st.tab + 3) % 4;
-    if (Pressed(ImGuiKey_GamepadR1) || Pressed(ImGuiKey_PageDown)) st.tab = (st.tab + 1) % 4;
+    if (Pressed(ImGuiKey_GamepadL1) || Pressed(ImGuiKey_PageUp)) st.tab = (st.tab + kTabCount - 1) % kTabCount;
+    if (Pressed(ImGuiKey_GamepadR1) || Pressed(ImGuiKey_PageDown)) st.tab = (st.tab + 1) % kTabCount;
     float x = at.x + pad, y = at.y + band + fs * 0.5f;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < kTabCount; i++) {
         ImVec2 ts = ImGui::CalcTextSize(kTabs[i]);
         ImVec2 a(x - fs * 0.3f, y - fs * 0.2f), b(x + ts.x + fs * 0.3f, y + ts.y + fs * 0.3f);
         bool hover = ImGui::IsMouseHoveringRect(a, b);
@@ -348,7 +318,7 @@ void Menu(State& st) {
         ImU32 col = ImGui::GetColorU32(i == st.tab ? kInk : ImVec4(kAccent.x, kAccent.y, kAccent.z, hover ? 1.0f : 0.7f));
         dl->AddText(ImVec2(x, y), col, kTabs[i]);
         if (i == st.tab) dl->AddRectFilled(ImVec2(x, y + ts.y + fs * 0.1f), ImVec2(x + ts.x, y + ts.y + fs * 0.22f), col);
-        if (i < 3) dl->AddText(ImVec2(x + ts.x + fs * 0.6f, y), ImGui::GetColorU32(kSoft), "-");
+        if (i < kTabCount - 1) dl->AddText(ImVec2(x + ts.x + fs * 0.6f, y), ImGui::GetColorU32(kSoft), "-");
         x += ts.x + fs * 1.8f;
     }
 
@@ -362,7 +332,6 @@ void Menu(State& st) {
     switch (tab) {
         case 0: Display(st); break;
         case 1: Graphics(st); break;
-        case 2: Audio(st); break;
         default: Overlay(st); break;
     }
     ImGui::PopID();
