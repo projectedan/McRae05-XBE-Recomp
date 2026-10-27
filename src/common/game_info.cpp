@@ -9,6 +9,7 @@
 
 namespace xdk {
 void SetMix(float dialogue, float front, float centre, float back, float sub, uint32_t sub_hz);  // xdk/dsound.cpp
+void SetEffects(bool gp);
 }
 
 namespace {
@@ -16,12 +17,15 @@ namespace {
 // channel's low pass starts (0 keeps its whole range)
 uint32_t g_mix_dialogue = 100, g_mix_front = 100, g_mix_centre = 100, g_mix_back = 100, g_mix_sub = 100,
          g_mix_sub_hz = 180;
+// the audio effects: 1 runs the game's own on the emulated GP, 0 the hand-written stand-ins used before it
+uint32_t g_audio_effects = 1;
 
 void Init() {
     LOGI("cmr2005: build %s", CMR_BUILD_ID);
     auto pc = [](uint32_t v, float base) { return base * float(v) / 100.0f; };
     xdk::SetMix(pc(g_mix_dialogue, 1.78f), pc(g_mix_front, 1.0f), pc(g_mix_centre, 0.707f), pc(g_mix_back, 0.707f),
                 pc(g_mix_sub, 0.5f), g_mix_sub_hz);
+    xdk::SetEffects(g_audio_effects != 0);
 }
 }  // namespace
 
@@ -37,7 +41,8 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "CMR2005"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"mix_dialogue", nullptr, &g_mix_dialogue}, {"mix_front", nullptr, &g_mix_front},
                 {"mix_centre", nullptr, &g_mix_centre},     {"mix_back", nullptr, &g_mix_back},
-                {"mix_sub", nullptr, &g_mix_sub},           {"mix_sub_hz", nullptr, &g_mix_sub_hz}},
+                {"mix_sub", nullptr, &g_mix_sub},           {"mix_sub_hz", nullptr, &g_mix_sub_hz},
+                {"audio_effects", nullptr, &g_audio_effects}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = Init,                         // after the settings load, before the window and boot

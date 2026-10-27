@@ -295,6 +295,9 @@ struct Mix {
     uint32_t sub_hz = 180;  // 0: the whole range
 };
 Mix g_mix;
+// audio_effects in the settings file: the effects image on the emulated GP (1) or the hand-written stand-ins (0)
+bool g_gp = true;
+bool ImageLoaded() { return g_gp ? dsp::Loaded() : dsp::legacy::Loaded(); }
 
 // a second order low pass (RBJ), one per output side
 struct LowPass {
@@ -357,7 +360,7 @@ Gains SlotGains(const Voice& v) {
     const uint8_t* bin = v.nbins ? v.bin : kSpeakerBins;
     uint32_t n = v.nbins ? v.nbins : std::min<uint32_t>(voices * 2, 6);
     uint32_t per = std::max<uint32_t>(n / voices, 1);
-    bool image = dsp::Loaded();
+    bool image = ImageLoaded();
     Gains g = {};
     for (uint32_t k = 0; k < voices; k++) {
         for (uint32_t s = k * per; s < (k + 1) * per && s < n; s++) {
@@ -500,7 +503,7 @@ Gains Levels(const Voice& v, const Place& at) {
         for (uint32_t b = 0; b < kBins; b++) row[b] *= BinScale(at, b);
     }
     if (at.on && v.channels == 1) SplitEars(g);
-    if (!dsp::Loaded()) RouteWithoutImage(v, g);
+    if (!ImageLoaded()) RouteWithoutImage(v, g);
     // a sound placed at NaN goes silent alone; its NaN gain would silence the whole mix
     for (auto& row : g.bin) {
         for (float& gain : row) {
@@ -770,13 +773,45 @@ void Render(float* out, uint32_t frames) {
     static std::vector<float> bins;  // the output thread alone renders
     bins.assign(size_t(frames) * kBins, 0.0f);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    // while recording, each voice's level, and once a second the loudest: what is playing when, by name
+    bool rec = g_recorder.On();
+    static std::vector<float> before;
+    static std::map<uint32_t, double> energy;
     for (auto& [obj, v] : g_voices) {
         if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
+        if (rec) before = bins;
         MixVoice(v, bins.data(), frames);
+        if (rec) {
+            double e = 0;
+            for (size_t k = 0; k < bins.size(); k++) e += double(bins[k] - before[k]) * (bins[k] - before[k]);
+            energy[obj] += e;
+        }
+    }
+    static double next_report = 1;
+    if (rec && g_recorder.Seconds() >= next_report) {
+        std::vector<std::pair<double, uint32_t>> loud;
+        for (auto& [obj, e] : energy) loud.push_back({e, obj});
+        std::sort(loud.rbegin(), loud.rend());
+        std::string t;
+        for (size_t k = 0; k < loud.size() && k < 5; k++) {
+            auto it = g_voices.find(loud[k].second);
+            if (it == g_voices.end() || loud[k].first <= 0) continue;
+            const Voice& v = it->second;
+            char b[160];
+            int n = std::snprintf(b, sizeof b, " | %08X %.0f dB %s%s%s sample %08X bins", v.obj,
+                                  10 * std::log10(loud[k].first / audio::kRate + 1e-12), v.stream ? "stream" : "buffer",
+                                  v.looping ? " looped" : "", v.is3d ? " 3D" : "", v.stream ? 0 : v.data);
+            for (uint32_t i = 0; i < v.nbins && n < int(sizeof b) - 12; i++)
+                n += std::snprintf(b + n, sizeof b - size_t(n), " %u:%d", v.bin[i], v.bin_mb[v.bin[i]]);
+            t += b;
+        }
+        LOGI("dsound: loudest at %.0f s%s", next_report, t.empty() ? " | none" : t.c_str());
+        energy.clear();
+        next_report += 1;
     }
     static std::vector<float> sends;  // what the effects image reads, for the recording
     if (g_recorder.On()) sends = bins;
-    if (dsp::Loaded()) dsp::Run(bins.data(), frames);
+    if (ImageLoaded()) (g_gp ? dsp::Run : dsp::legacy::Run)(bins.data(), frames);
     static LowPass sub_lp;
     static uint32_t sub_hz = ~0u;
     if (sub_hz != g_mix.sub_hz) sub_lp.Set(float(sub_hz = g_mix.sub_hz));
@@ -1044,6 +1079,17 @@ static uint32_t ListenerToReverb() {
 // (this, DSI3DL2LISTENER, apply): DSOUND's own conversion writes the reverb's state segment, which the GP picks up
 HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (!g_gp) {
+        // the stand-in reverb takes the listener as floats; room, room HF, reflections and reverb are integers
+        float p[12];
+        for (int i = 0; i < 12 && a[1]; i++) {
+            uint32_t v = R32(a[1] + i * 4);
+            bool integer = i < 2 || i == 5 || i == 7;
+            p[i] = integer ? float(int32_t(v)) : F32(v);
+        }
+        if (a[1]) dsp::legacy::SetListener(p);
+        return 0;
+    }
     uint32_t fn = ListenerToReverb();
     if (!fn || !a[1] || g_reverb_effect < 0 || size_t(g_reverb_effect) >= g_effect_states.size()) return 0;
     static uint32_t scratch = 0;  // the conversion's object, then its listener
@@ -1053,6 +1099,26 @@ HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     W32(listener, 0);
     std::memcpy(HostPtr(listener + 4), HostPtr(a[1]), 48);
     uint32_t ecx = ctx.ecx;
+    // DSPDUMP set: the I3DL2 "generic" preset converted on a copy of the state, for testing the reverb offline
+    static bool dumped = false;
+    if (std::getenv("DSPDUMP") && !dumped) {
+        dumped = true;
+        uint32_t bytes = g_effect_states[g_reverb_effect].bytes, copy = mem::AllocSystem(bytes);
+        std::memcpy(HostPtr(copy), HostPtr(state), bytes);
+        const uint32_t generic[12] = {uint32_t(-1000), uint32_t(-100), 0, 0x3FBEB852 /* 1.49 */, 0x3F547AE1 /* 0.83 */,
+                                      uint32_t(-2602), 0x3BE56042 /* 0.007 */, 200, 0x3C343958 /* 0.011 */,
+                                      0x42C80000 /* 100 */, 0x42C80000, 0x459C4000 /* 5000 */};
+        std::memcpy(HostPtr(listener + 4), generic, 48);
+        W32(scratch, copy);
+        ctx.ecx = scratch;
+        CallGuest(ctx, fn, {listener, copy});
+        if (FILE* f = std::fopen("dsp_reverb_generic.bin", "wb")) {
+            std::fwrite(HostPtr(copy), 1, bytes, f);
+            std::fclose(f);
+        }
+        W32(scratch, state);
+        std::memcpy(HostPtr(listener + 4), HostPtr(a[1]), 48);
+    }
     ctx.ecx = scratch;
     CallGuest(ctx, fn, {listener, state});
     ctx.ecx = ecx;
@@ -1144,7 +1210,8 @@ static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name, u
     g_reverb_effect = reverb;
     std::vector<uint32_t> addresses;
     for (const Segment& s : states) addresses.push_back(s.at);
-    dsp::Load(img, t, addresses, reverb, GpProgram());
+    if (g_gp) dsp::Load(img, t, addresses, reverb, GpProgram());
+    else dsp::legacy::Load(img, t, addresses, reverb);
     return desc;
 }
 
@@ -1543,6 +1610,11 @@ void SetVoiceNotifications(uint32_t obj, uint32_t count, uint32_t positions) {
 
 namespace xdk {
 // the stereo mix from the game's settings (src/common/game_info.cpp): amplitudes, 1 as the default mix has them
+void SetEffects(bool gp) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    g_gp = gp;
+    LOGI("dsound: effects image on %s", gp ? "the emulated GP" : "the hand-written stand-ins");
+}
 void SetMix(float dialogue, float front, float centre, float back, float sub, uint32_t sub_hz) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_mix = {dialogue, front, centre, back, sub, sub_hz};

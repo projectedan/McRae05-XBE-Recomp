@@ -17,4 +17,15 @@ bool Loaded();
 // frames of kBins interleaved: the voice processor's mix in, the speaker bins 0..5 out, 32 frames later
 void Run(float* bins, uint32_t frames);
 
+// the hand-written stand-ins used before the GP (xdk/dsp_legacy.cpp), to compare by ear: gain, mixer, filter, reverb
+// and crosstalk reproduced, other effects passed through
+namespace legacy {
+void Load(const std::vector<uint8_t>& img, size_t table, const std::vector<uint32_t>& states, int32_t reverb);
+bool Loaded();
+// DSI3DL2LISTENER as 12 floats
+void SetListener(const float* p);
+// frames of kBins interleaved: the voice processor's mix in, the speaker bins 0..5 out
+void Run(float* bins, uint32_t frames);
+}  // namespace legacy
+
 }  // namespace dsp
