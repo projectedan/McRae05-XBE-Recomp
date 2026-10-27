@@ -67,6 +67,9 @@ inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fe
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause
 // the title's own frame: from one swap's return to the next swap, and the swaps (the frame cap's wait is outside it)
 inline std::atomic<uint64_t> g_perf_title_ns{0}, g_perf_title_frames{0};
+// the last swap's waits on the title thread: for the render thread's previous present, for the GPU's previous frame,
+// and the frame cap's
+inline std::atomic<uint64_t> g_perf_present_wait_ns[2], g_perf_pace_ns{0};
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};

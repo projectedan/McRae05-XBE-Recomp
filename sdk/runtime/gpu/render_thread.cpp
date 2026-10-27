@@ -185,8 +185,12 @@ public:
         g_perf_capture_ns += Ns(t);
         // the title records one frame while the one before it draws, on the GPU too: a GPU bound frame rate then paces
         // the game like a frame rate cap, and the frame times the game measures match the frames shown
+        auto w = Clock::now();
         Wait(last_present_, WaitFor::Frame, nullptr);
+        auto g = Clock::now();
         if (presents_) inner_->WaitGpuFrame(presents_ - 1);
+        g_perf_present_wait_ns[1].store(Ns(g));
+        g_perf_present_wait_ns[0].store(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(g - w).count()));
         presents_++;
         last_present_ = id;
     }

@@ -616,7 +616,7 @@ std::atomic<uint32_t> g_presents{0};
 void LogTitleFrameTimes() {
     using clock = std::chrono::steady_clock;
     static clock::time_point last{}, second = clock::now();
-    static std::vector<double> swaps, dts;
+    static std::vector<double> swaps, dts, wait_rt, wait_gpu, pace;
     static const uint32_t dt_at = [] {
         const char* e = std::getenv("XBE_PERF_DT");
         return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
@@ -624,6 +624,9 @@ void LogTitleFrameTimes() {
     auto now = clock::now();
     if (last.time_since_epoch().count()) swaps.push_back(std::chrono::duration<double, std::milli>(now - last).count());
     last = now;
+    wait_rt.push_back(gpu::g_perf_present_wait_ns[0].load() / 1e6);
+    wait_gpu.push_back(gpu::g_perf_present_wait_ns[1].load() / 1e6);
+    pace.push_back(gpu::g_perf_pace_ns.load() / 1e6);
     if (dt_at) {
         float dt;
         std::memcpy(&dt, HostPtr(dt_at), 4);
@@ -641,6 +644,9 @@ void LogTitleFrameTimes() {
     };
     spread(swaps, "title swap to swap");
     spread(dts, "title's own frame time");
+    spread(wait_rt, "swap's wait for the render thread");
+    spread(wait_gpu, "swap's wait for the GPU");
+    spread(pace, "swap's frame cap wait");
 }
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
@@ -678,8 +684,17 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
-    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    // The cap's wait comes before the present, as the console shows a finished frame at the next blank: presented the
+    // moment the title finished it, a frame with smoke or sparks about went out 3 or 4 ms after a light one, and the
+    // frames shown 16.67 ms apart on average were 13 to 20 ms apart one by one
+    auto pace_from = std::chrono::steady_clock::now();
     app::Pace();
+    gpu::g_perf_pace_ns.store(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - pace_from).count()));
+    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    // the title's time stamp counter steps a whole frame at a capped swap, as on the console's blank locked frames
+    uint32_t cap = app::Get().fps_cap;
+    kernel::FrameClockSwap(cap > app::kFpsCapRefresh ? cap : 0);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {

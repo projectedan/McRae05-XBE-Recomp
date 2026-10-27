@@ -8,8 +8,10 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -276,13 +278,66 @@ void x86_priv(X86Context& ctx, uint32_t va, const char* what) {
     (void)ctx;
 }
 
-// the guest measured time against a 733.33 MHz time stamp counter
-uint64_t x86_rdtsc() {
+namespace {
+// The frame clock. On the console a frame ends at a blank, so a title timing its frames on the time stamp counter
+// reads 16.67 ms every time. Here the cap shows frames 16.67 ms apart, but CMR reads the counter just before it swaps,
+// so its frame time was 16.67 plus the change in its own work from one frame to the next: 13 to 20 ms with smoke,
+// sparks or dust about, and its camera and effects, which move by that time while its physics steps once a frame,
+// lurched. With a cap the counter holds still through a frame and steps a whole one at each swap (a 2% pull keeps it
+// on real time). A frame half again too long takes its real length, and past that much time since the last swap the
+// counter runs on, so nothing that waits on it between swaps (loading) waits for ever. It never goes back.
+struct FrameClock {
+    std::mutex m;
+    bool on = false;
+    double period = 0;     // ms
+    double swap_real = 0;  // ms since start, real, of the last swap
+    double swap_virt = 0;  // what the counter reads from then
+    double last = 0;       // the latest it has read
+} g_frame_clock;
+
+double RealMs() {
     using namespace std::chrono;
     static const auto start = steady_clock::now();
-    auto ns = duration_cast<nanoseconds>(steady_clock::now() - start).count();
-    uint64_t sec = uint64_t(ns) / 1000000000ull, rem = uint64_t(ns) % 1000000000ull;
-    return sec * 733333333ull + rem * 733333333ull / 1000000000ull;
+    return duration<double, std::milli>(steady_clock::now() - start).count();
+}
+}  // namespace
+
+namespace kernel {
+void FrameClockSwap(uint32_t fps) {
+    FrameClock& c = g_frame_clock;
+    std::lock_guard<std::mutex> lock(c.m);
+    double now = RealMs();
+    if (!fps) {
+        c.on = false;
+        return;
+    }
+    double period = 1000.0 / fps;
+    if (!c.on || c.period != period) {
+        c.on = true;
+        c.period = period;
+        c.swap_real = now;
+        c.swap_virt = std::max(now, c.last);
+        return;
+    }
+    double real_dt = now - c.swap_real, next = c.swap_virt + period;
+    double v = real_dt < period * 1.5 ? next + std::clamp((now - next) * 0.02, -0.25, 0.25) : c.swap_virt + real_dt;
+    if (std::fabs(now - v) > 50.0) v = now;
+    c.swap_virt = std::max(v, c.last);
+    c.swap_real = now;
+}
+}  // namespace kernel
+
+// the guest measured time against a 733.33 MHz time stamp counter
+uint64_t x86_rdtsc() {
+    double ms = RealMs();
+    {
+        FrameClock& c = g_frame_clock;
+        std::lock_guard<std::mutex> lock(c.m);
+        if (c.on) ms = c.swap_virt + std::max(0.0, ms - c.swap_real - c.period * 1.5);
+        ms = std::max(ms, c.last);
+        c.last = ms;
+    }
+    return uint64_t(ms * 733333.333);
 }
 
 void x86_cpuid(X86Context& ctx) {

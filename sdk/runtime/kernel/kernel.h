@@ -95,6 +95,8 @@ inline void Return(X86Context& ctx, uint32_t value, int stack_args) {
 
 // runs guest code from the host on the current guest thread
 uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t count);
+// at each swap of a frame paced to fps (0: unpaced): the time stamp counter steps a whole frame (cpu/dispatch.cpp)
+void FrameClockSwap(uint32_t fps);
 inline uint32_t CallGuest(X86Context& ctx, uint32_t fn, std::initializer_list<uint32_t> args) {
     return CallGuest(ctx, fn, args.begin(), args.size());
 }
