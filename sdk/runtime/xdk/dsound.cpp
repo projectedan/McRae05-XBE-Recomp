@@ -1076,7 +1076,11 @@ static uint32_t ListenerToReverb() {
     return found;
 }
 
-// (this, DSI3DL2LISTENER, apply): DSOUND's own conversion writes the reverb's state segment, which the GP picks up
+// (this, DSI3DL2LISTENER, apply): as DSOUND commits a listener (0x2225A2 in CMR): its conversion runs on a copy of
+// the reverb's first 0x118 state bytes, then only the flags word, with bit 2 set (the reverb takes new parameters,
+// fading across), and the parameters at 0x118..0x220 go back to the state segment for the GP. Writing the whole
+// converted copy instead changed the delay lines under the running reverb: a stale stretch of engine sound could
+// then loop on through pauses.
 HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     if (!g_gp) {
@@ -1092,29 +1096,41 @@ HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     }
     uint32_t fn = ListenerToReverb();
     if (!fn || !a[1] || g_reverb_effect < 0 || size_t(g_reverb_effect) >= g_effect_states.size()) return 0;
-    static uint32_t scratch = 0;  // the conversion's object, then its listener
-    if (!scratch) scratch = mem::AllocSystem(4 + 4 + 48);
-    uint32_t state = g_effect_states[g_reverb_effect].at, listener = scratch + 4;
+    constexpr uint32_t kRead = 0x118, kFlags = 0x10, kParams = 0x118, kParamsEnd = 0x220, kCopy = 0x224;
+    constexpr uint32_t kNewParameters = 4;
+    const Segment& seg = g_effect_states[g_reverb_effect];
+    if (seg.bytes < kParamsEnd) return 0;
+    static uint32_t scratch = 0;  // the conversion's object, its listener, the state copy
+    if (!scratch) scratch = mem::AllocSystem(4 + 4 + 48 + kCopy);
+    uint32_t listener = scratch + 4, state = scratch + 56;
+    std::memset(HostPtr(state), 0, kCopy);
+    std::memcpy(HostPtr(state), HostPtr(seg.at), kRead);
     W32(scratch, state);
     W32(listener, 0);
     std::memcpy(HostPtr(listener + 4), HostPtr(a[1]), 48);
     uint32_t ecx = ctx.ecx;
-    // DSPDUMP set: the I3DL2 "generic" preset converted on a copy of the state, for testing the reverb offline
+    // DSPDUMP set: the I3DL2 "generic" and "mountains" presets converted on copies of the whole state, for testing
+    // the reverb offline
     static bool dumped = false;
     if (std::getenv("DSPDUMP") && !dumped) {
         dumped = true;
-        uint32_t bytes = g_effect_states[g_reverb_effect].bytes, copy = mem::AllocSystem(bytes);
-        std::memcpy(HostPtr(copy), HostPtr(state), bytes);
-        const uint32_t generic[12] = {uint32_t(-1000), uint32_t(-100), 0, 0x3FBEB852 /* 1.49 */, 0x3F547AE1 /* 0.83 */,
-                                      uint32_t(-2602), 0x3BE56042 /* 0.007 */, 200, 0x3C343958 /* 0.011 */,
-                                      0x42C80000 /* 100 */, 0x42C80000, 0x459C4000 /* 5000 */};
-        std::memcpy(HostPtr(listener + 4), generic, 48);
-        W32(scratch, copy);
-        ctx.ecx = scratch;
-        CallGuest(ctx, fn, {listener, copy});
-        if (FILE* f = std::fopen("dsp_reverb_generic.bin", "wb")) {
-            std::fwrite(HostPtr(copy), 1, bytes, f);
-            std::fclose(f);
+        static const uint32_t kPresets[2][12] = {
+            {uint32_t(-1000), uint32_t(-100), 0, 0x3FBEB852 /* 1.49 */, 0x3F547AE1 /* 0.83 */, uint32_t(-2602),
+             0x3BE56042 /* 0.007 */, 200, 0x3C343958 /* 0.011 */, 0x42C80000 /* 100 */, 0x42C80000, 0x459C4000 /* 5000 */},
+            {uint32_t(-1000), uint32_t(-2500), 0, 0x3FBEB852 /* 1.49 */, 0x3E570A3D /* 0.21 */, uint32_t(-2780),
+             0x3E99999A /* 0.3 */, uint32_t(-2014), 0x3DCCCCCD /* 0.1 */, 0x41D80000 /* 27 */, 0x42C80000, 0x459C4000}};
+        static const char* kNames[2] = {"dsp_reverb_generic.bin", "dsp_reverb_mountains.bin"};
+        uint32_t copy = mem::AllocSystem(seg.bytes);
+        for (int k = 0; k < 2; k++) {
+            std::memcpy(HostPtr(copy), HostPtr(seg.at), seg.bytes);
+            std::memcpy(HostPtr(listener + 4), kPresets[k], 48);
+            W32(scratch, copy);
+            ctx.ecx = scratch;
+            CallGuest(ctx, fn, {listener, copy});
+            if (FILE* f = std::fopen(kNames[k], "wb")) {
+                std::fwrite(HostPtr(copy), 1, seg.bytes, f);
+                std::fclose(f);
+            }
         }
         W32(scratch, state);
         std::memcpy(HostPtr(listener + 4), HostPtr(a[1]), 48);
@@ -1122,8 +1138,18 @@ HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     ctx.ecx = scratch;
     CallGuest(ctx, fn, {listener, state});
     ctx.ecx = ecx;
-    LOG_FIRST(4, "dsound: I3DL2 listener room %d, reverb %d, decay %.2f s: reverb state rewritten",
-              int32_t(R32(a[1])), int32_t(R32(a[1] + 28)), F32(R32(a[1] + 12)));
+    W32(seg.at + kFlags, R32(state + kFlags) | kNewParameters);
+    std::memcpy(HostPtr(seg.at + kParams), HostPtr(state + kParams), kParamsEnd - kParams);
+    // each listener that differs from the last, whole, to replay a stage's reverb offline
+    static uint32_t last[12] = {};
+    if (std::memcmp(last, HostPtr(a[1]), 48) != 0) {
+        std::memcpy(last, HostPtr(a[1]), 48);
+        auto i = [&](int k) { return int32_t(last[k]); };
+        auto f = [&](int k) { return F32(last[k]); };
+        LOGI("dsound: I3DL2 listener room %d HF %d rolloff %g decay %g HF ratio %g reflections %d delay %g reverb %d "
+             "delay %g diffusion %g density %g HF reference %g",
+             i(0), i(1), f(2), f(3), f(4), i(5), f(6), i(7), f(8), f(9), f(10), f(11));
+    }
     return 0;
 }
 HLE_STDCALL(IDirectSound_SetPosition, 5) {
