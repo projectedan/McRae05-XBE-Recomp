@@ -609,6 +609,16 @@ std::atomic<uint32_t> g_presents{0};
 }  // namespace
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
+    static std::chrono::steady_clock::time_point title_from{};
+    if (diag::Perf() && title_from.time_since_epoch().count()) {
+        gpu::g_perf_title_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::steady_clock::now() - title_from).count());
+        gpu::g_perf_title_frames++;
+    }
+    struct TitleFrom {
+        std::chrono::steady_clock::time_point& t;
+        ~TitleFrom() { t = std::chrono::steady_clock::now(); }
+    } title_next{title_from};
     app::SplashFirstFrame();
     // handed over from the previous instance: the window opens on the second frame, the first picture with
     // anything drawn over it right after

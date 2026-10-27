@@ -77,6 +77,7 @@ struct Perf {
     double wait = 0;
     double swap = 0;
     double sync = 0;
+    double gpu = 0;  // GPU time from a frame's first command to its present, frames read back since the last log
     // counts and bytes
     uint64_t draws = 0;
     uint64_t verts = 0;
@@ -95,6 +96,7 @@ struct Perf {
     uint64_t shaders = 0;
     uint64_t raw = 0;
     uint64_t lates = 0;
+    uint64_t gpu_frames = 0;
 };
 Perf g_perf;
 struct PerfScope {
@@ -677,6 +679,13 @@ private:
     uint64_t fence_value_ = 0;
     Frame frames_[kFrames];
     uint64_t frame_ = 0;
+    // perf: a timestamp at each frame's start and present, two per frame slot, read when the slot comes round again
+    ComPtr<ID3D12QueryHeap> ts_heap_;
+    ComPtr<ID3D12Resource> ts_rb_;
+    const uint64_t* ts_ = nullptr;
+    double ts_ms_ = 0;  // milliseconds a tick
+    bool ts_started_[kFrames] = {};
+    void GpuTimestamp(uint32_t slot);
     ViewTable last_views_;
     ComPtr<ID3D12GraphicsCommandList> cl_;
     ComPtr<ID3D12DescriptorHeap> srv_heap_;
@@ -3116,6 +3125,38 @@ void D3D12Backend::ResetFrame() {
     f.srv = 0;
     cl_->Reset(f.alloc.Get(), nullptr);
     Begin();
+    if (diag::Perf()) {
+        uint32_t i = uint32_t(frame_ % kFrames);
+        // the slot's last frame is done: its GPU time
+        if (ts_started_[i] && ts_ && ts_[i * 2 + 1] > ts_[i * 2]) {
+            g_perf.gpu += double(ts_[i * 2 + 1] - ts_[i * 2]) * ts_ms_;
+            g_perf.gpu_frames++;
+        }
+        GpuTimestamp(i * 2);
+        ts_started_[i] = ts_ != nullptr;
+    }
+}
+
+void D3D12Backend::GpuTimestamp(uint32_t slot) {
+    if (!ts_) {
+        static bool tried = false;
+        if (tried) return;
+        tried = true;
+        D3D12_QUERY_HEAP_DESC qd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrames * 2, 0};
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+        D3D12_RESOURCE_DESC bd = BufferDesc(kFrames * 2 * sizeof(uint64_t));
+        void* p = nullptr;
+        UINT64 hz = 0;
+        if (FAILED(dev_->CreateQueryHeap(&qd, IID_PPV_ARGS(&ts_heap_))) ||
+            FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                 IID_PPV_ARGS(&ts_rb_))) ||
+            FAILED(ts_rb_->Map(0, nullptr, &p)) || FAILED(queue_->GetTimestampFrequency(&hz)) || !hz)
+            return;
+        ts_ = static_cast<const uint64_t*>(p);
+        ts_ms_ = 1000.0 / double(hz);
+    }
+    cl_->EndQuery(ts_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot);
+    cl_->ResolveQueryData(ts_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot, 1, ts_rb_.Get(), uint64_t(slot) * 8);
 }
 
 void D3D12Backend::CountFps() {
@@ -3181,11 +3222,14 @@ void LogPerf() {
         Perf& p = g_perf;
         double n = double(perf_frames);
         double host = p.draw + p.clear + p.copy + p.present + p.sync;
-        LOGI("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
-             "compile %.2f; clear %.2f copy %.2f sync %.2f present %.2f [swap %.2f wait %.2f]) other %.2f",
-             n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n,
-             p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
-             (el - host) / n);
+        LOGI("perf: %.1f fps %.2f ms/frame | gpu %.2f | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, "
+             "upload %.2f] compile %.2f; clear %.2f copy %.2f sync %.2f present %.2f [swap %.2f wait %.2f]) other %.2f",
+             n * 1000.0 / el, el / n, p.gpu_frames ? p.gpu / double(p.gpu_frames) : 0.0, host / n, p.draw / n,
+             p.assemble / n, p.bind / n, p.sig / n, p.texup / n, p.compile / n, p.clear / n, p.copy / n, p.sync / n,
+             p.present / n, p.swap / n, p.wait / n, (el - host) / n);
+        uint64_t tf = g_perf_title_frames.exchange(0);
+        LOGI("perf: title's own frame %.2f ms (game code and recording, swap to swap less the cap's wait), %llu frames",
+             tf ? g_perf_title_ns.exchange(0) / double(tf) / 1e6 : 0.0, (unsigned long long)tf);
         LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
              "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
              "%.1f NOOVERWRITE",
@@ -3224,6 +3268,7 @@ void D3D12Backend::Present(const Surface& front) {
 
     uint32_t bi = swap_->GetCurrentBackBufferIndex();
     DrawFrame(t, bi);
+    if (diag::Perf() && ts_started_[frame_ % kFrames]) GpuTimestamp(uint32_t(frame_ % kFrames) * 2 + 1);
     Submit(false);
     present_fence_[presents_ % (kFrames + 1)].store(fence_value_);
     DeliverReports();

@@ -65,6 +65,8 @@ std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 inline std::atomic<uint64_t> g_perf_capture_ns{0}, g_perf_wait_ns{0}, g_perf_waits{0};
 inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fence, flush, copy, next frame
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause
+// the title's own frame: from one swap's return to the next swap, and the swaps (the frame cap's wait is outside it)
+inline std::atomic<uint64_t> g_perf_title_ns{0}, g_perf_title_frames{0};
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
