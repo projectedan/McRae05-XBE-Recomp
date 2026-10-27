@@ -31,3 +31,7 @@ enum { VK_RETURN = 0x0D, VK_ESCAPE = 0x1B, VK_F3 = 0x72, VK_F10 = 0x79, VK_OEM_3
 inline HCURSOR LoadCursorW(void*, const wchar_t*) { return nullptr; }
 inline HCURSOR SetCursor(HCURSOR) { return nullptr; }
 inline short GetAsyncKeyState(int) { return 0; }
+
+// message boxes the runtime shows on failure: logged there already, nothing to show here
+enum : uint32_t { MB_OK = 0, MB_ICONERROR = 0x10, MB_TOPMOST = 0x40000 };
+inline int MessageBoxW(void*, const wchar_t*, const wchar_t*, uint32_t) { return 0; }

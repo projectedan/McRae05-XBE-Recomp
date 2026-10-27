@@ -3,6 +3,7 @@
 // PROBES="x,y x,y": log each colour written at those pixels of linear PROBE_WIDTH (640) wide targets, the first
 // probe with its triangle's vertices; TRACE="x,y": log the combiner registers of fragments there.
 #include "reference_renderer.h"
+#include "harness.h"
 
 #include <algorithm>
 #include <array>
@@ -1153,6 +1154,20 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
         for (int a : {kD0, kD1, kB0, kB1})
             for (int j = 0; j < 4; j++) o.attr[a][j] = Sat(o.attr[a][j]);
         if (!s.rs[kRsSpecularEnable]) o.attr[kD1] = o.attr[kB1] = V(0, 0, 0, 1);
+    }
+    // VERTS=1: a small draw's inputs and shaded vertices, for passes over a target
+    static const long dump_verts = harness::Env("VERTS");
+    if (dump_verts && as.vertex_count <= 6) {
+        LOGI("ref verts: rt %08X tex0 %08X viewport %g %g %g %g, %u vertices", s.rt.data, s.textures[0], s.viewport.x,
+             s.viewport.y, s.viewport.w, s.viewport.h, as.vertex_count);
+        for (uint32_t vi = 0; vi < as.vertex_count; vi++) {
+            const Shaded& o = verts[vi];
+            const float* p0 = slot[0] >= 0 ? input(vi, 0) : nullptr;
+            const float* p2 = slot[2] >= 0 ? input(vi, 2) : nullptr;
+            LOGI("ref verts:  v0 %g %g %g %g v2 %g %g pos %g %g %g %g t0 %g %g", p0 ? p0[0] : 0, p0 ? p0[1] : 0,
+                 p0 ? p0[2] : 0, p0 ? p0[3] : 0, p2 ? p2[0] : 0, p2 ? p2[1] : 0, o.pos[0], o.pos[1], o.pos[2], o.pos[3],
+                 o.attr[kT0][0], o.attr[kT0][1]);
+        }
     }
 
     // raster and output state

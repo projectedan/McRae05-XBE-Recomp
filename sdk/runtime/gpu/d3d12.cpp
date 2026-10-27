@@ -1574,11 +1574,15 @@ float D3D12Backend::TargetScale() const {
     return float(t->w) / float(t->gw);
 }
 
-// the XDK's screen space offset puts the console's positions half a pixel right and down of the host's, unless a
-// program writes them without c-37; render target reads move back that far (TexUv)
+// The console samples a pixel where D3D8 puts its centre, at the title's integer coordinates; the XDK's viewport
+// offset (c-37) moves positions 0.53125 up and left for the NV2A, which the host samples half a pixel further on, 1.03125
+// pixels right and down of the console's. Render target reads move back that far (TexUv). CMR's depth of field chain
+// (two downsamples, two copies a texel apart, the composite a texel in) lands on the scene only there: half a pixel
+// back left the blurred copy 8 pixels down and right of what it blurs, a halo around everything.
+// Fixed function draws keep the half pixel they were tuned with; a program writing positions without c-37 none.
 float D3D12Backend::RenderTargetShift(const State& s, const DrawShaders& sh) const {
-    bool offset = !sh.prog || ReadsViewportOffset(s.vs->program);
-    return offset ? -0.5f * TargetScale() : 0.0f;
+    if (!sh.prog) return -0.5f * TargetScale();
+    return ReadsViewportOffset(s.vs->program) ? -1.03125f * TargetScale() : 0.0f;
 }
 
 ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps) {

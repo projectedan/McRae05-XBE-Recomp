@@ -280,6 +280,12 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
 constexpr float kFold = 0.707f;
 constexpr float kLfeFold = 0.316f;     // -10 dB
 constexpr float kCentreFold = 1.41f;  // +3 dB, over the console's -3 dB: the co-driver's channel, lifted over the engine
+// ducking under the centre, per output frame at 48 kHz: what counts as speech, how far the rest drops, how fast
+constexpr float kSpeechThreshold = 0.01f;   // -40 dBFS
+constexpr float kSpeechRelease = 0.99993f;  // the speech envelope holds through a word's gaps, ~300 ms
+constexpr float kDuck = 0.63f;              // -4 dB
+constexpr float kDuckAttack = 0.0005f;      // ~40 ms down
+constexpr float kDuckRelease = 0.00005f;    // ~400 ms back up
 
 // A voice with no speaker bin and no effects image plays its loudest bin on the front pair; with speaker bins the
 // crosstalk bins join their speakers and effect sends are dropped. Without the title's image nothing reads them.
@@ -655,16 +661,22 @@ void Render(float* out, uint32_t frames) {
         MixVoice(v, bins.data(), frames);
     }
     if (dsp::Loaded()) dsp::Run(bins.data(), frames);
+    // the rest of the mix ducks under the centre while it speaks, as a broadcast mix keeps a voice over its bed:
+    // CMR's co-driver, otherwise lost under the engine near the limiter however loud the centre
+    static float speech = 0.0f, duck = 1.0f;
     for (uint32_t i = 0; i < frames; i++) {
         const float* b = &bins[size_t(i) * kBins];
+        float c = std::fabs(b[kCentre]);
+        speech = c > speech ? c : speech * kSpeechRelease;
+        float target = speech > kSpeechThreshold ? kDuck : 1.0f;
+        duck += (target - duck) * (target < duck ? kDuckAttack : kDuckRelease);
         // the low frequency channel folds in 10 dB down, as stereo downmixes that keep it do: titles route sound there
         // that a stereo console plays (CMR's engine sends most of its non-3D level to it; without it the chase camera's
         // engine was nearly silent, at the centre's level it drowned the rest of the mix)
-        // the centre at full level: titles put speech there (CMR's co-driver), which at -3 dB sank under the engine
-        out[i * 2] =
-            std::clamp(b[kFrontLeft] + kCentreFold * b[kCentre] + kFold * b[kBackLeft] + kLfeFold * b[kSub], -1.0f, 1.0f);
-        out[i * 2 + 1] =
-            std::clamp(b[kFrontRight] + kCentreFold * b[kCentre] + kFold * b[kBackRight] + kLfeFold * b[kSub], -1.0f, 1.0f);
+        float l = b[kFrontLeft] + kFold * b[kBackLeft] + kLfeFold * b[kSub];
+        float r = b[kFrontRight] + kFold * b[kBackRight] + kLfeFold * b[kSub];
+        out[i * 2] = std::clamp(duck * l + kCentreFold * b[kCentre], -1.0f, 1.0f);
+        out[i * 2 + 1] = std::clamp(duck * r + kCentreFold * b[kCentre], -1.0f, 1.0f);
     }
 }
 
