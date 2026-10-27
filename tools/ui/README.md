@@ -8,7 +8,7 @@
   beside the templates in `README.txt`.
 - `fontgen.cpp`: rebuilds every font sheet from a typeface installed on Windows (DirectWrite): each character the
   game's table lists, sized to the game's cap height, on its baseline, spanning the game's letter (stretched within
-  20%), controller icons kept. Writes the sheets at a scale under the names `textureseplacement\` expects, and
+  20%), controller icons kept. Writes the sheets at a scale under the names `textures/replacement/` (beside the exe) expects, and
   `preview.png` with game text now and in each family: `fontgen assets/fonts out_dir 4 Arial Roboto` (the first
   family's sheets are written). `FONTGEN_DEBUG=<font>` prints each glyph's spans.
 - `texkey.py`: the port's texture name for a `.dds` (gpu/texturedumper.cpp Key).
