@@ -249,14 +249,14 @@ void FrameCounter(double fps) {
     ImGui::PopStyleColor(2);
 }
 
-// every pad's buttons into ImGui's gamepad keys
-void FeedGamepad() {
+// every pad's buttons into ImGui's gamepad keys; read: false lets them all go without reading the pads
+void FeedGamepad(bool read) {
     ImGuiIO& io = ImGui::GetIO();
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     uint16_t buttons = 0;
     uint8_t analog[8] = {};
     int lx = 0, ly = 0;
-    for (int port = 0; port < 4; port++) {
+    for (int port = 0; read && port < 4; port++) {
         input::Pad p = input::Read(port);
         if (!p.connected) continue;
         buttons |= p.buttons;
@@ -400,8 +400,9 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
 
 void Draw(double fps) {
     State& st = g_state;
-    FeedGamepad();
     bool open = g_open;
+    // the pads are read only while the menu is up: reads from the render thread wait on the game's own and stall it
+    if (open || st.was_open) FeedGamepad(open);
     if (open && !st.was_open) {
         st.modes = Modes();
         st.changed = false;
