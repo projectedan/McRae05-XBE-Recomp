@@ -14,12 +14,13 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexWide, kTexTarget; bits 0 and 1 are a backend extension's
+    uint8_t flags = 0;   // kTexWide, kTexTarget, kTexDepthBytes, kTexSharp; bits 0 and 1 are a backend extension's
 };
 enum : uint8_t {
     kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
     kTexTarget = 8,  // a render target, read where the console's pixel offset puts it (DrawConstants::rtshift)
     kTexDepthBytes = 16,  // a D24S8 depth target read as A8R8G8B8: its depth's bytes in a, r and g, as in memory
+    kTexSharp = 32,  // a 2D draw's texture: sampled Catmull-Rom where enlarged (sharptap), sharper than bilinear
 };
 
 struct PixelKey {

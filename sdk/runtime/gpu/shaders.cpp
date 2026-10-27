@@ -405,6 +405,7 @@ std::string TexFetch(const PixelKey& k, int i) {
     auto tex2d = [&](const std::string& uv) {
         if (t.flags & kTexDepthBytes) return F("depthbytes(tex%d.Sample(smp%d, %s).r)", i, i, uv.c_str());
         if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+        if (t.flags & kTexSharp) return F("sharptap(tex%d, smp%d, %s, texsize[%d].xy)", i, i, uv.c_str(), i);
         return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
     };
     auto cube = [&](const std::string& dir) {
@@ -475,7 +476,23 @@ float4 depthbytes(float z) {
     return float4((d >> 8) & 255, d & 255, 0, d >> 16) / 255.0;
 }
 )";
-const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
+const char* kPsTail = R"(// Catmull-Rom from nine bilinear taps where the texture is enlarged, a plain tap where it is not
+float4 sharptap(Texture2D t, SamplerState s, float2 uv, float2 size) {
+    float2 f = fwidth(uv * size);
+    float4 plain = t.Sample(s, uv);
+    if (max(f.x, f.y) >= 1) return plain;
+    float2 p = uv * size, c = floor(p - 0.5) + 0.5, x = p - c;
+    float2 w0 = x * (-0.5 + x * (1.0 - 0.5 * x)), w1 = 1.0 + x * x * (-2.5 + 1.5 * x);
+    float2 w2 = x * (0.5 + x * (2.0 - 1.5 * x)), w3 = x * x * (-0.5 + 0.5 * x);
+    float2 w12 = w1 + w2, t0 = (c - 1) / size, t3 = (c + 2) / size, t12 = (c + w2 / w12) / size;
+    float4 r = t.SampleLevel(s, float2(t0.x, t0.y), 0) * w0.x * w0.y + t.SampleLevel(s, float2(t12.x, t0.y), 0) * w12.x * w0.y +
+               t.SampleLevel(s, float2(t3.x, t0.y), 0) * w3.x * w0.y + t.SampleLevel(s, float2(t0.x, t12.y), 0) * w0.x * w12.y +
+               t.SampleLevel(s, float2(t12.x, t12.y), 0) * w12.x * w12.y + t.SampleLevel(s, float2(t3.x, t12.y), 0) * w3.x * w12.y +
+               t.SampleLevel(s, float2(t0.x, t3.y), 0) * w0.x * w3.y + t.SampleLevel(s, float2(t12.x, t3.y), 0) * w12.x * w3.y +
+               t.SampleLevel(s, float2(t3.x, t3.y), 0) * w3.x * w3.y;
+    return saturate(r);
+}
+float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
     for (int y = 0; y < n; y++)
@@ -933,6 +950,8 @@ std::string PixelHlsl(const PixelKey& k) {
                         F(", tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
                 body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+            else if (t.kind == kTex2D && (t.flags & kTexSharp))
+                body += F("float4 t%d = sharptap(tex%d, smp%d, %s, texsize[%d].xy);\n", i, i, i, uv.c_str(), i);
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);

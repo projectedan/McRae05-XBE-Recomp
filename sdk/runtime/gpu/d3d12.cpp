@@ -2645,6 +2645,15 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
     if (!BindStageTexturesAndTargets(s, stages)) return;
+    // 2D draws (menus, HUD, text) sample the title's own filtered textures sharper: bicubic where enlarged. Not render
+    // targets or depth, not texel addressed ones, not a texture pack's images (sized past the console's)
+    if (a.pretransformed && app::Get().sharp_2d && !texturedumper::Replacing())
+        for (int i = 0; i < 4; i++) {
+            TexInfo& ti = stages.info[i];
+            if (ti.kind == kTex2D && !ti.rect && !ti.shadow && !stages.rt[i] &&
+                !(ti.flags & (kTexWide | kTexTarget | kTexDepthBytes)) && s.tss[size_t(i)][kTssMagFilter] >= kTexfLinear)
+                ti.flags |= kTexSharp;
+        }
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     sh.pkey = Hash(&pk, sizeof(pk));
