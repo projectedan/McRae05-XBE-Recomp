@@ -300,33 +300,39 @@ void Rebuild(Sheet& s, const std::wstring& family, int scale) {
     Ink base_ink;
     Draw(family, st.weight, st.stretch, em, L"H", base_ink);
     int base_row = base_ink.y1;  // the baseline in a drawn bitmap at this size
-    // the game's sheet enlarged under everything: what is not redrawn keeps its look
+    // A clear sheet, and a glyph that is not redrawn (an icon) the game's own, enlarged inside its box only, its
+    // samples kept within the box: the whole sheet enlarged smeared each letter's edge past its box, and the game,
+    // sampling a box's edge, showed those smears as thin lines beside the new letters
     s.big = Gray{s.game.w * scale, s.game.h * scale, std::vector<float>(size_t(s.game.w) * scale * s.game.h * scale),
                  std::vector<uint32_t>(size_t(s.game.w) * scale * s.game.h * scale, 0xFFFFFF)};
-    for (int y = 0; y < s.big.h; y++)
-        for (int x = 0; x < s.big.w; x++) {
-            float gx = (x + 0.5f) / scale, gy = (y + 0.5f) / scale;
-            s.big.a[size_t(y) * s.big.w + x] = std::clamp(s.game.Bilinear(gx, gy), 0.0f, 1.0f);
-            s.big.rgb[size_t(y) * s.big.w + x] = s.game.rgb[size_t(std::min(int(gy), s.game.h - 1)) * s.game.w + std::min(int(gx), s.game.w - 1)];
-        }
+    auto keep = [&](const Glyph& g) {
+        s.kept++;
+        for (int y = g.y * scale; y < (g.y + g.h) * scale && y < s.big.h; y++)
+            for (int x = g.x * scale; x < (g.x + g.w) * scale && x < s.big.w; x++) {
+                float gx = std::clamp((x + 0.5f) / scale, g.x + 0.5f, g.x + g.w - 0.5f);
+                float gy = std::clamp((y + 0.5f) / scale, g.y + 0.5f, g.y + g.h - 0.5f);
+                s.big.a[size_t(y) * s.big.w + x] = std::clamp(s.game.Bilinear(gx, gy), 0.0f, 1.0f);
+                s.big.rgb[size_t(y) * s.big.w + x] = s.game.rgb[size_t(int(gy)) * s.game.w + int(gx)];
+            }
+    };
     for (const Glyph& g : f.glyphs) {
         wchar_t c = CharOf(g.code);
         Ink old_ink = InkOf(s.game, g.x, g.y, g.w, g.h);
         if (!c || !old_ink.any()) {
-            s.kept++;
+            keep(g);
             continue;
         }
         Ink k;
         Gray d = Draw(family, st.weight, st.stretch, em, std::wstring(1, c), k);
         if (!k.any()) {
-            s.kept++;
+            keep(g);
             continue;
         }
         // a symbol the family draws far off the game's size is an icon of the game's own (controller buttons): kept
         float hr = float(k.y1 - k.y0) / scale / float(old_ink.y1 - old_ink.y0);
         float wr = float(k.x1 - k.x0) / scale / float(old_ink.x1 - old_ink.x0);
         if (!iswalnum(c) && (hr > 1.6f || hr < 0.55f || wr > 1.8f || wr < 0.45f)) {
-            s.kept++;
+            keep(g);
             continue;
         }
         s.drawn++;
