@@ -10,3 +10,8 @@ about 35 s); change them for a new recording.
 - `bed_spectrum.py rec.wav ref.wav`: the bed's (no speech) band spectrum against the reference's.
 - `send_levels.py rec.wav`: each channel and send's level in 0.8-2.5 kHz, bed and speech frames.
 - `fold_sim.py rec.wav`: stereo folds simulated from the recorded speaker channels, and their speech pop.
+- `bands.py file.wav [left right start end]`: band levels of a stereo mix in 50 ms blocks and how far events rise over
+  the median (stdlib only, no numpy). Used to compare a recording's outL/outR (14 15) with the Xbox hardware capture.
+- `timeline.py rec.wav`: each channel's level every 0.5 s, for finding pauses and what keeps playing in them.
+- `mp4wav.cpp`: a video's audio to WAV through Media Foundation (no ffmpeg needed). Build with clang++ and
+  `-lmfplat -lmfreadwrite -lmfuuid -lole32`.

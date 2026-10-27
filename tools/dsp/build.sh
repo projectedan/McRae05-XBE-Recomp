@@ -15,3 +15,8 @@ cp "$H/osdep.h" "$H/bswap.h" "$OUT/inc/qemu/"; cp "$H/trace.h" "$OUT/inc/"
 clang -O1 -w -I"$OUT/inc" -I"$D" -I"$D/interp" "$H/dis.c" -o "$OUT/dis"
 clang -O1 -w -I"$OUT/inc" -I"$D" -I"$D/interp" "$H/run_effect.c" -o "$OUT/run_effect" -lm
 echo "built $OUT/dis $OUT/run_effect"
+# Also in this folder, built the same way against the fetched xemu (Windows: VS clang++, -Iinc with osdep.h, bswap.h,
+# compiler.h and trace.h from sdk/third_party/xemu-dsp/shim): gp_replay.cpp runs the game's GP program and effects
+# image on a record.bat recording's sends (REC=audio_rec.wav), gp_switch10.cpp switches reverb presets mid-sound
+# (MODE=old|dsound, from the DSPDUMP preset dumps). Both read the GP program as kernel.enc:
+#   python xbe_read.py assets/default.xbe 23C820 5CC kernel.enc   (CMR's DSOUND GP program, 0x173 words)
