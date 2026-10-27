@@ -281,18 +281,17 @@ void Complete(Voice& v, Packet& pk, uint32_t status) {
     }
 }
 
-// The stereo downmix of the speaker bins, the console's: centre and back pair at -3 dB. The low frequency channel joins
-// low passed, as a stereo set's bass does: CMR sends its engine there near full scale and full range, and folded in
-// whole its mid range sat on the co-driver's (measured against a recording of the game, his calls stood 4 to 6 dB
-// less clear of the rest). Dialogue (see Voice::dialogue) is lifted by the remaining gap. All of it can be set in the
-// settings file (the game's mix_ options); the defaults are these.
+// The stereo downmix of the speaker bins, plain: centre and back pair at -3 dB, the low frequency channel whole at
+// -10 dB (CMR sends its engine there near full scale; a hardware capture of the console has it that low in the mix),
+// no lift for dialogue (Voice::dialogue) and no low pass. Each can be set in the settings file (the game's mix_
+// options) to fit the console by measurement; the defaults are these.
 struct Mix {
-    float dialogue = 1.78f;  // +5 dB
+    float dialogue = 1.0f;
     float front = 1.0f;
     float centre = 0.707f;
     float back = 0.707f;
-    float sub = 0.5f;
-    uint32_t sub_hz = 180;  // 0: the whole range
+    float sub = 0.316f;
+    uint32_t sub_hz = 0;  // 0: the whole range
 };
 Mix g_mix;
 // audio_effects in the settings file: the effects image on the emulated GP (1) or the hand-written stand-ins (0)

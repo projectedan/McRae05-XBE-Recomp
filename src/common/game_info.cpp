@@ -16,15 +16,15 @@ namespace {
 // the stereo mix, in the settings file: each a percent of the default level (100), mix_sub_hz where the low frequency
 // channel's low pass starts (0 keeps its whole range)
 uint32_t g_mix_dialogue = 100, g_mix_front = 100, g_mix_centre = 100, g_mix_back = 100, g_mix_sub = 100,
-         g_mix_sub_hz = 180;
+         g_mix_sub_hz = 0;
 // the audio effects: 1 runs the game's own on the emulated GP, 0 the hand-written stand-ins used before it
 uint32_t g_audio_effects = 1;
 
 void Init() {
     LOGI("cmr2005: build %s", CMR_BUILD_ID);
     auto pc = [](uint32_t v, float base) { return base * float(v) / 100.0f; };
-    xdk::SetMix(pc(g_mix_dialogue, 1.78f), pc(g_mix_front, 1.0f), pc(g_mix_centre, 0.707f), pc(g_mix_back, 0.707f),
-                pc(g_mix_sub, 0.5f), g_mix_sub_hz);
+    xdk::SetMix(pc(g_mix_dialogue, 1.0f), pc(g_mix_front, 1.0f), pc(g_mix_centre, 0.707f), pc(g_mix_back, 0.707f),
+                pc(g_mix_sub, 0.316f), g_mix_sub_hz);
     xdk::SetEffects(g_audio_effects != 0);
 }
 }  // namespace
