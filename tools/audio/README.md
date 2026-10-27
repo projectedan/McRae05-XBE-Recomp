@@ -15,3 +15,6 @@ about 35 s); change them for a new recording.
 - `timeline.py rec.wav`: each channel's level every 0.5 s, for finding pauses and what keeps playing in them.
 - `mp4wav.cpp`: a video's audio to WAV through Media Foundation (no ffmpeg needed). Build with clang++ and
   `-lmfplat -lmfreadwrite -lmfuuid -lole32`.
+- `fit_fold.py rec.wav start end`: searches the stereo fold's centre, back and LFE gains for the Xbox capture's band
+  balance and co-driver rise. On the plain-mix recording (2026-10-27) the defaults already match the balance within
+  1-2 dB and no fold reaches the capture's rise (best 8.3 dB against 10.2, with the centre at an extreme 1.4).
