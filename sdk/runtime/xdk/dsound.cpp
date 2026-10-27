@@ -696,6 +696,7 @@ class Recorder {
 public:
     static constexpr uint32_t kChannels = 16;
     bool On() { return Open(); }
+    double Seconds() const { return double(written_) / audio::kRate; }  // into the recording
     void Add(const float* bins, const float* sends, const float* out, uint32_t frames) {
         std::vector<int16_t> pcm;
         pcm.reserve(size_t(frames) * kChannels);
@@ -1175,6 +1176,17 @@ BUFFER(Play, 4) {
     v.looping = a[3] & 1;
     if (a[3] & 2) v.pos = 0;
     v.sync = a[3] & 4;
+    // while recording, every sound started, at its time in audio_rec.wav: which sample (its address), how long, at
+    // what pitch and volume, to which bins. To tell whether a sound (CMR's backfires) is played at all.
+    if (g_recorder.On()) {
+        char t[200] = "";
+        for (uint32_t i = 0, n = 0; i < v.nbins && n < sizeof(t) - 16; i++)
+            n += uint32_t(std::snprintf(t + n, sizeof(t) - n, " %u:%d", v.bin[i], v.bin_mb[v.bin[i]]));
+        uint32_t rate = v.freq ? v.freq : v.rate;
+        LOGI("dsound: play at %.2f s: voice %08X sample %08X %u ms at %u Hz%s%s volume %.1f dB bins%s",
+             g_recorder.Seconds(), v.obj, v.data + v.play_start, unsigned(1000.0 * FramesOf(v, v.play_len) / rate),
+             rate, v.looping ? " looped" : "", v.is3d ? " 3D" : "", 20 * std::log10(std::max(v.volume, 1e-5f)), t);
+    }
     return 0;
 }
 BUFFER(Stop, 1) {
