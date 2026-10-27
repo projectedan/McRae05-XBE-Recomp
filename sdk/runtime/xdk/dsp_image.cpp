@@ -325,11 +325,6 @@ void Load(const std::vector<uint8_t>& image, size_t table, const std::vector<uin
 
 bool Loaded() { return g_loaded; }
 
-void SetListener(const float*) {
-    // DSOUND converts the listener to the reverb effect's state; that conversion is not reproduced yet
-    LOG_FIRST(1, "dsound: I3DL2 listener set; the GP reverb keeps the image's settings");
-}
-
 void Run(float* bins, uint32_t frames) {
     for (uint32_t i = 0; i < frames; i++) {
         float* frame = bins + size_t(i) * kBins;

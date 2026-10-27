@@ -14,8 +14,6 @@ constexpr uint32_t kBins = 32;  // mix bins, DSMIXBIN 0..31
 void Load(const std::vector<uint8_t>& img, size_t table, const std::vector<uint32_t>& states, int32_t reverb,
           const std::vector<uint8_t>& program);
 bool Loaded();
-// DSI3DL2LISTENER as 12 floats
-void SetListener(const float* p);
 // frames of kBins interleaved: the voice processor's mix in, the speaker bins 0..5 out, 32 frames later
 void Run(float* bins, uint32_t frames);
 

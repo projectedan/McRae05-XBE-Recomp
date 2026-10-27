@@ -196,6 +196,7 @@ struct Segment {
     uint32_t bytes;
 };
 std::vector<Segment> g_effect_states;  // each effect's state segment of the downloaded image
+int32_t g_reverb_effect = -1;          // the image's I3DL2 reverb (DSEFFECTIMAGELOC)
 
 void ForgetBlocks(Voice& v) {
     v.block[0] = -1;
@@ -1015,16 +1016,48 @@ HLE_STDCALL(IDirectSound_SetRolloffFactor, 3) {
 }
 HLE_STDCALL(IDirectSound_SetDistanceFactor, 3) { return 0; }
 HLE_STDCALL(IDirectSound_SetVelocity, 5) { return 0; }
-// (this, DSI3DL2LISTENER, apply): room, room HF, reflections and reverb are integers
-HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
-    float p[12];
-    for (int i = 0; i < 12; i++) {
-        uint32_t v = R32(a[1] + i * 4);
-        bool integer = i < 2 || i == 5 || i == 7;
-        p[i] = integer ? float(int32_t(v)) : F32(v);
+// DSOUND's conversion of an I3DL2 listener into the reverb effect's state, found in its section by its first bytes:
+// a thiscall on an object whose first dword is the state, with (listener, state). The listener it reads is a dword
+// then DSI3DL2LISTENER; it rewrites the state's delays, gains and filters in place.
+static uint32_t ListenerToReverb() {
+    static const uint8_t kStart[] = {0x55, 0x8B, 0xEC, 0x51, 0x51, 0x8B, 0x45, 0x0C, 0x56, 0x57, 0x8B,
+                                     0x7D, 0x08, 0x8B, 0xF1, 0x89, 0x06, 0xD9, 0x47, 0x28, 0xD8, 0x0D};
+    static uint32_t found = ~0u;
+    if (found != ~0u) return found;
+    found = 0;
+    for (auto& s : g_image->sections) {
+        if (s.name != "DSOUND") continue;
+        const uint8_t* p = static_cast<const uint8_t*>(HostPtr(s.va));
+        for (uint32_t o = 0; o + sizeof kStart <= s.vsize; o++)
+            if (std::memcmp(p + o, kStart, sizeof kStart) == 0) {
+                if (found) {
+                    LOGE("dsound: I3DL2 listener conversion found twice, not used");
+                    return found = 0;
+                }
+                found = s.va + o;
+            }
     }
+    if (!found) LOGE("dsound: I3DL2 listener conversion not found, the reverb keeps the image's settings");
+    return found;
+}
+
+// (this, DSI3DL2LISTENER, apply): DSOUND's own conversion writes the reverb's state segment, which the GP picks up
+HLE_STDCALL(IDirectSound_SetI3DL2Listener, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    dsp::SetListener(p);
+    uint32_t fn = ListenerToReverb();
+    if (!fn || !a[1] || g_reverb_effect < 0 || size_t(g_reverb_effect) >= g_effect_states.size()) return 0;
+    static uint32_t scratch = 0;  // the conversion's object, then its listener
+    if (!scratch) scratch = mem::AllocSystem(4 + 4 + 48);
+    uint32_t state = g_effect_states[g_reverb_effect].at, listener = scratch + 4;
+    W32(scratch, state);
+    W32(listener, 0);
+    std::memcpy(HostPtr(listener + 4), HostPtr(a[1]), 48);
+    uint32_t ecx = ctx.ecx;
+    ctx.ecx = scratch;
+    CallGuest(ctx, fn, {listener, state});
+    ctx.ecx = ecx;
+    LOG_FIRST(4, "dsound: I3DL2 listener room %d, reverb %d, decay %.2f s: reverb state rewritten",
+              int32_t(R32(a[1])), int32_t(R32(a[1] + 28)), F32(R32(a[1] + 12)));
     return 0;
 }
 HLE_STDCALL(IDirectSound_SetPosition, 5) {
@@ -1108,6 +1141,7 @@ static uint32_t EffectsDesc(const std::vector<uint8_t>& img, const char* name, u
     int32_t reverb = loc ? int32_t(R32(loc)) : -1;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     g_effect_states = states;
+    g_reverb_effect = reverb;
     std::vector<uint32_t> addresses;
     for (const Segment& s : states) addresses.push_back(s.at);
     dsp::Load(img, t, addresses, reverb, GpProgram());
