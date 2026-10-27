@@ -3125,7 +3125,50 @@ void D3D12Backend::CountFps() {
     }
 }
 
+// frame time spread: each frame's time from present to present, and a frame past kSlowFrameMs named with what it did
+constexpr double kSlowFrameMs = 25.0;
+void LogFrameTime() {
+    static PerfClock::time_point last = PerfClock::now();
+    static Perf prev;
+    static uint64_t prev_wait = 0;
+    static int logged = 0;
+    double ms = PerfMs(last);
+    last = PerfClock::now();
+    const Perf& p = g_perf;
+    uint64_t wait = g_perf_wait_ns.load();
+    // LogPerf cleared the counters and the title's waits since the last frame
+    if (p.draws < prev.draws || p.texups < prev.texups) prev = Perf{};
+    if (wait < prev_wait) prev_wait = 0;
+    if (ms > kSlowFrameMs && logged < 20) {
+        logged++;
+        LOGI("perf: slow frame %.1f ms | compile %.1f ms, %llu shaders %llu psos | textures %.1f ms, %llu uploads %.2f MB, "
+             "%llu new | targets %llu new %llu uploads | read-backs %llu %.1f ms | draws %llu %.1f ms | swap %.1f ms "
+             "| title waited %.1f ms",
+             ms, p.compile - prev.compile, (unsigned long long)(p.shaders - prev.shaders),
+             (unsigned long long)(p.psos - prev.psos), p.texup - prev.texup, (unsigned long long)(p.texups - prev.texups),
+             (p.texup_bytes - prev.texup_bytes) / 1048576.0, (unsigned long long)(p.newtex - prev.newtex),
+             (unsigned long long)(p.targets - prev.targets), (unsigned long long)(p.rtups - prev.rtups),
+             (unsigned long long)(p.syncs - prev.syncs), p.sync - prev.sync, (unsigned long long)(p.draws - prev.draws),
+             p.draw - prev.draw, p.swap - prev.swap, (wait - prev_wait) / 1e6);
+    }
+    prev = p;
+    prev_wait = wait;
+    static std::vector<double> times;
+    times.push_back(ms);
+    static PerfClock::time_point second = PerfClock::now();
+    if (PerfMs(second) < 1000.0) return;
+    std::sort(times.begin(), times.end());
+    auto at = [&](double q) { return times[std::min(times.size() - 1, size_t(q * double(times.size())))]; };
+    LOGI("perf: frame times ms: median %.1f, p95 %.1f, p99 %.1f, worst %.1f; %zu frames, %zu over %.0f ms", at(0.5),
+         at(0.95), at(0.99), times.back(), times.size(),
+         size_t(times.end() - std::upper_bound(times.begin(), times.end(), kSlowFrameMs)), kSlowFrameMs);
+    times.clear();
+    second = PerfClock::now();
+    logged = 0;
+}
+
 void LogPerf() {
+    LogFrameTime();
     static PerfClock::time_point perf_start = PerfClock::now();
     static uint64_t perf_frames = 0;
     perf_frames++;
