@@ -463,6 +463,8 @@ bool RebuildNatural(Sheet& s, const std::wstring& family, int scale, float size 
         // a symbol the family draws far off the game's size is a game icon (controller buttons): kept as it was
         float hr = float(m.k.y1 - m.k.y0) / scale / float(old_ink.y1 - old_ink.y0);
         if (!iswalnum(c) && (hr > 1.6f || hr < 0.55f)) continue;
+        // so is any symbol past ASCII: the game keeps its button icons under codes such as 188 and 189 (¼ ½)
+        if (c >= 0x80 && !iswalpha(c)) continue;
         DWRITE_GLYPH_METRICS gm{};
         face->GetDesignGlyphMetrics(&m.index, 1, &gm);
         // the box is the advance, widened only where the ink would leave it; ink starting left of the pen moves in
