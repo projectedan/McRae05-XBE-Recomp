@@ -103,8 +103,8 @@ constexpr int kTabCount = int(std::size(kTabs));
 bool Pressed(ImGuiKey key) { return ImGui::IsKeyPressed(key, true); }
 
 // one setting: its name on the left, its value on the right; -1 or +1 when stepped (left and right, A or a click
-// steps on, a right click back), 0 otherwise
-int Row(const char* label, const std::string& value, bool enabled = true) {
+// steps on, a right click back), 0 otherwise. action: a button rather than a setting, taken only by A, Enter or a click
+int Row(const char* label, const std::string& value, bool enabled = true, bool action = false) {
     ImGui::PushID(label);
     float h = ImGui::GetFontSize() * 1.9f;
     ImVec2 at = ImGui::GetCursorScreenPos();
@@ -120,8 +120,8 @@ int Row(const char* label, const std::string& value, bool enabled = true) {
     if (!enabled) ImGui::EndDisabled();
     int step = 0;
     if (clicked) step = 1;
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) step = -1;
-    if (focused) {
+    if (!action && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) step = -1;
+    if (focused && !action) {
         if (Pressed(ImGuiKey_LeftArrow) || Pressed(ImGuiKey_GamepadDpadLeft) || Pressed(ImGuiKey_GamepadLStickLeft))
             step = -1;
         if (Pressed(ImGuiKey_RightArrow) || Pressed(ImGuiKey_GamepadDpadRight) || Pressed(ImGuiKey_GamepadLStickRight))
@@ -136,7 +136,7 @@ int Row(const char* label, const std::string& value, bool enabled = true) {
     }
     float ty = at.y + (h - ImGui::GetFontSize()) / 2;
     dl->AddText(ImVec2(at.x + pad, ty), text, label);
-    std::string shown = focused ? "<  " + value + "  >" : value;
+    std::string shown = focused && !action ? "<  " + value + "  >" : value;
     float vw = ImGui::CalcTextSize(shown.c_str()).x;
     dl->AddText(ImVec2(at.x + w - pad - vw, ty), text, shown.c_str());
     ImGui::PopID();
@@ -340,7 +340,7 @@ void Menu(State& st) {
 
     // under every section: back to the desktop, asked twice so a stray press does not end the game
     ImGui::Dummy(ImVec2(0, fs * 1.2f));
-    if (Row("Quit to desktop", st.quit_armed ? "Press again to quit" : "")) {
+    if (Row("Quit to desktop", st.quit_armed ? "Press A again to quit" : "", true, true)) {
         if (st.quit_armed) {
             if (st.changed) app::Save();
             LOGI("menu: quit to desktop");
