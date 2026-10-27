@@ -337,6 +337,10 @@ void Rebuild(Sheet& s, const std::wstring& family, int scale) {
                 s.big.a[size_t(y) * s.big.w + x] = 0;
                 s.big.rgb[size_t(y) * s.big.w + x] = 0xFFFFFF;
             }
+        // the glyph keeps clear of the box's edge: the game samples each box with bilinear filtering, which at the edge
+        // reaches across into the next box, and a glyph out to its edge showed as a thin line beside its neighbour
+        const int kMargin = std::max(1, scale / 2);
+        bx0 += kMargin, by0 += kMargin, bx1 -= kMargin, by1 -= kMargin;
         // across, the glyph spans the game's letter exactly (its width matched within 20%), so the game's spacing and
         // kerning, made for its own letters, fit; down, it sits on the game's baseline at the family's own height
         // spans by what shows, faint edges included: the game's soft letters reach a pixel past their solid ink, and
