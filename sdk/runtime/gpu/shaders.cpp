@@ -221,6 +221,11 @@ const char* kVsEpilogue = R"(
     precise float4 p = oPos;
     p.w = magclamp(p.w);
     precise float4 q;
+    // a full screen pass moved 0.53125 down-right by the program itself (CMR's menu backdrop adds c1, the XDK's screen
+    // space offset) misses D3D12's first pixel centers, a column and a row of whatever was under it: its edges go
+    // back that far, the whole quad moves rather than stretches
+    if (surf.w == 0 && (abs(p.x - 0.53125) < 1e-3 || abs(p.x - (surf.x + 0.53125)) < 1e-3)) p.x -= 0.53125;
+    if (surf.w == 0 && (abs(p.y - 0.53125) < 1e-3 || abs(p.y - (surf.y + 0.53125)) < 1e-3)) p.y -= 0.53125;
     // full screen passes drawn half a pixel up-left for the console's integer pixel centers stop half a pixel short
     // of the far edges on D3D12's, which upscaled leaves the last host columns and rows undrawn
     // surf.w set: a point, which stays put since pulled out it would leave the target
