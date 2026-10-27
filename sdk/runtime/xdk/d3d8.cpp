@@ -12,10 +12,13 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "app/app.h"
 #include "core/diag.h"
@@ -608,7 +611,40 @@ namespace {
 std::atomic<uint32_t> g_presents{0};
 }  // namespace
 
+// perf: the title thread's swap to swap interval, and XBE_PERF_DT (a guest address in hex) a float of seconds the title
+// keeps as its frame time, each second's spread: what the game's own clock sees between frames
+void LogTitleFrameTimes() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point last{}, second = clock::now();
+    static std::vector<double> swaps, dts;
+    static const uint32_t dt_at = [] {
+        const char* e = std::getenv("XBE_PERF_DT");
+        return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u;
+    }();
+    auto now = clock::now();
+    if (last.time_since_epoch().count()) swaps.push_back(std::chrono::duration<double, std::milli>(now - last).count());
+    last = now;
+    if (dt_at) {
+        float dt;
+        std::memcpy(&dt, HostPtr(dt_at), 4);
+        dts.push_back(double(dt) * 1000.0);
+    }
+    if (now - second < std::chrono::seconds(1)) return;
+    second = now;
+    auto spread = [](std::vector<double>& v, const char* what) {
+        if (v.empty()) return;
+        std::sort(v.begin(), v.end());
+        auto at = [&](double q) { return v[std::min(v.size() - 1, size_t(q * double(v.size())))]; };
+        LOGI("perf: %s ms: p1 %.2f, median %.2f, p99 %.2f, worst %.2f; %zu frames", what, at(0.01), at(0.5), at(0.99),
+             v.back(), v.size());
+        v.clear();
+    };
+    spread(swaps, "title swap to swap");
+    spread(dts, "title's own frame time");
+}
+
 HLE_STDCALL(D3DDevice_Swap, 1) {
+    if (diag::Perf()) LogTitleFrameTimes();
     static std::chrono::steady_clock::time_point title_from{};
     if (diag::Perf() && title_from.time_since_epoch().count()) {
         gpu::g_perf_title_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
