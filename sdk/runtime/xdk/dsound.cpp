@@ -5,10 +5,13 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <optional>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "audio/audio.h"
@@ -652,6 +655,79 @@ void MixVoice(Voice& v, float* bins, uint32_t frames) {
     if (!v.stream && !v.notify.empty()) Notify(v, from, BytesOf(v, uint32_t(v.pos)), !v.playing);
 }
 
+// XBE_AUDIO_REC=seconds: the first that many seconds of output saved beside the exe as audio_rec.wav, 16 bit at
+// 48 kHz, 10 channels: the six speaker bins after the effects image (front left, right, centre, low frequency, back
+// left, right), bins 13 and 23 as voices send them, then the stereo output. For measuring a mix offline.
+class Recorder {
+public:
+    static constexpr uint32_t kChannels = 10;
+    void Add(const float* bins, const float* out, uint32_t frames) {
+        if (!Open()) return;
+        std::vector<int16_t> pcm;
+        pcm.reserve(size_t(frames) * kChannels);
+        auto put = [&](float x) { pcm.push_back(int16_t(std::lrint(std::clamp(x, -1.0f, 1.0f) * 32767.0f))); };
+        for (uint32_t i = 0; i < frames && written_ < limit_; i++, written_++) {
+            const float* b = bins + size_t(i) * kBins;
+            for (uint32_t c = 0; c < 6; c++) put(b[c]);
+            put(b[13]);
+            put(b[23]);
+            put(out[i * 2]);
+            put(out[i * 2 + 1]);
+        }
+        std::fwrite(pcm.data(), 2, pcm.size(), f_);
+        // the header follows the data each second, so a file cut short still plays
+        if (written_ >= limit_ || written_ - header_at_ >= audio::kRate) {
+            Header();
+            header_at_ = written_;
+        }
+        if (written_ >= limit_) {
+            std::fclose(f_);
+            f_ = nullptr;
+            done_ = true;
+            LOGI("dsound: recorded %u seconds to audio_rec.wav", unsigned(limit_ / audio::kRate));
+        }
+    }
+
+private:
+    bool Open() {
+        if (f_) return true;
+        if (done_ || tried_) return false;
+        tried_ = true;
+        const char* e = std::getenv("XBE_AUDIO_REC");
+        if (!e) return false;
+        limit_ = uint64_t(std::max(1, std::atoi(e))) * audio::kRate;
+        f_ = std::fopen("audio_rec.wav", "wb");
+        if (!f_) return false;
+        Header();
+        LOGI("dsound: recording %s seconds to audio_rec.wav", e);
+        return true;
+    }
+    void Header() {
+        auto w32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f_); };
+        auto w16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f_); };
+        uint32_t data = uint32_t(written_ * kChannels * 2);
+        long at = std::ftell(f_);
+        std::fseek(f_, 0, SEEK_SET);
+        std::fwrite("RIFF", 1, 4, f_);
+        w32(36 + data);
+        std::fwrite("WAVEfmt ", 1, 8, f_);
+        w32(16);
+        w16(1);
+        w16(kChannels);
+        w32(audio::kRate);
+        w32(audio::kRate * kChannels * 2);
+        w16(kChannels * 2);
+        w16(16);
+        std::fwrite("data", 1, 4, f_);
+        w32(data);
+        if (at > 44) std::fseek(f_, at, SEEK_SET);
+    }
+    FILE* f_ = nullptr;
+    bool tried_ = false, done_ = false;
+    uint64_t limit_ = 0, written_ = 0, header_at_ = 0;
+};
+Recorder g_recorder;
+
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bins;  // the output thread alone renders
     bins.assign(size_t(frames) * kBins, 0.0f);
@@ -678,6 +754,7 @@ void Render(float* out, uint32_t frames) {
         out[i * 2] = std::clamp(duck * l + kCentreFold * b[kCentre], -1.0f, 1.0f);
         out[i * 2 + 1] = std::clamp(duck * r + kCentreFold * b[kCentre], -1.0f, 1.0f);
     }
+    g_recorder.Add(bins.data(), out, frames);
 }
 
 int64_t NowMs() {
@@ -731,6 +808,14 @@ void SetBins(Voice& v, uint32_t mixbins) {
         v.bin_mb[v.bin[i]] = int32_t(R32(pairs + i * 8 + 4));
     }
     v.nbins = uint8_t(n);
+    // each distinct bin list with its volumes (the first 48), to follow a title's routing
+    {
+        char t[200] = "";
+        for (uint32_t i = 0; i < n; i++)
+            snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), " %u:%d", v.bin[i], v.bin_mb[v.bin[i]]);
+        static std::set<std::string> seen;
+        if (seen.size() < 48 && seen.insert(t).second) LOGI("dsound: voice %08X bins%s", v.obj, t);
+    }
 }
 // volumes only, the bins stay
 void SetBinVolumes(Voice& v, uint32_t mixbins) {

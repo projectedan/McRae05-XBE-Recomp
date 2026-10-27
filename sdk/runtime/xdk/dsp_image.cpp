@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -446,6 +447,23 @@ void Load(const std::vector<uint8_t>& img, size_t table, const std::vector<uint3
             std::vector<uint8_t> code(img.begin() + code_at, img.begin() + code_at + code_bytes);
             Decrypt(&keys[i * kKeyBytes], code.data(), code.size());
             e.kind = KindOf(CodeHash(code));
+            // DSPDUMP set: each effect's decrypted code and first 64 state words beside the exe, for study offline
+            if (std::getenv("DSPDUMP")) {
+                char name[64];
+                snprintf(name, sizeof name, "dsp_effect_%02u.bin", i);
+                if (FILE* f = std::fopen(name, "wb")) {
+                    std::fwrite(code.data(), 1, code.size(), f);
+                    std::fclose(f);
+                }
+                snprintf(name, sizeof name, "dsp_state_%02u.bin", i);
+                if (FILE* f = std::fopen(name, "wb")) {
+                    for (uint32_t k = 0; k < 64; k++) {
+                        uint32_t w = R32(states[i] + k * 4);
+                        std::fwrite(&w, 4, 1, f);
+                    }
+                    std::fclose(f);
+                }
+            }
             if (e.kind == Kind::None) {
                 char w[160] = "";
                 for (uint32_t k = 0; k < 12; k++)
@@ -472,6 +490,21 @@ void Run(float* bins, uint32_t frames) {
         for (uint32_t b = 0; b < kBins; b++) {
             Buffer& bin = At(kBinRead + b * kBinStride);
             for (uint32_t i = 0; i < n; i++) bin[i] = Limit(frame[i * kBins + b]);
+        }
+        // DSPWATCH set: each change to an effect's first 20 state words, as the title sets effect data while it runs
+        static const bool watch = std::getenv("DSPWATCH") != nullptr;
+        if (watch) {
+            static std::vector<std::array<uint32_t, 20>> seen;
+            seen.resize(g_effects.size());
+            for (uint32_t k = 0; k < g_effects.size(); k++) {
+                std::array<uint32_t, 20> now;
+                for (uint32_t i = 0; i < 20; i++) now[i] = Word(g_effects[k], i);
+                if (now == seen[k]) continue;
+                seen[k] = now;
+                char w[200] = "";
+                for (uint32_t i = 0; i < 20; i++) snprintf(w + std::strlen(w), sizeof(w) - std::strlen(w), " %06X", now[i]);
+                LOGI("dsound: effect %u state%s", k, w);
+            }
         }
         for (uint32_t k = 0; k < g_effects.size(); k++) RunEffect(g_effects[k], k, n);
         for (uint32_t b = 0; b < kSpeakers; b++) {
