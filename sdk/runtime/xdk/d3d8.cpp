@@ -1572,6 +1572,7 @@ static void RunCommands(uint32_t begin, uint32_t end) {
 
 HLE_STDCALL(D3DDevice_EndPush, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LogCallers(ctx, "EndPush");
     RunCommands(g_push_begin, a[0]);
     g_push_begin = 0;
     ScratchPush();
@@ -1917,6 +1918,7 @@ HLE_STDCALL(D3DDevice_Begin, 1) {
 HLE_STDCALL(D3DDevice_End, 0) {
     XDK_REQUIRE("d3d", XDK_KEY(CDevice_Flags));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    LogCallers(ctx, "End");
     Walk(Dev(kDevPush));
     EndPrimitive();
     SetDev(XDK_CDevice_Flags, Dev(XDK_CDevice_Flags) & ~0x1800u);
