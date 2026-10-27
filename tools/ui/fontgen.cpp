@@ -474,8 +474,8 @@ bool RebuildNatural(Sheet& s, const std::wstring& family, int scale, float size 
     }
     if (std::getenv("FONTGEN_TRACE"))
         std::fprintf(stderr, "%s: em %.1f cap %.1f base %.1f face %p\n", s.name.c_str(), em, cap, base, (void*)face);
-    // the boxes laid out in the game's order, rows as tall as the game's boxes, edge to edge (each box keeps its own
-    // clear margin)
+    // the boxes laid out in the game's order, rows as tall as the game's boxes, a column apart as the game's are: the
+    // game draws each letter a pixel wider than its box, which shows the next box's left edge
     int x = 0, y = 0, row = 0;
     bool fits = true;
     for (size_t i = 0; i < f.glyphs.size(); i++) {
@@ -489,7 +489,7 @@ bool RebuildNatural(Sheet& s, const std::wstring& family, int scale, float size 
         }
         g.x = x;
         g.y = y;
-        x += g.w;
+        x += g.w + 1;
         row = std::max(row, g.h);
         if (y + g.h > s.game.h) fits = false;
     }
