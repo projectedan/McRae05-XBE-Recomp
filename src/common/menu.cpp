@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <iterator>
@@ -409,6 +410,10 @@ void Draw(double fps) {
         app::Save();
         LOGI("menu: settings saved");
     }
+    // the game blurred behind it, eased in and out over about a sixth of a second
+    float blur = app::g_backdrop_blur.load(), want = open ? 1.0f : 0.0f;
+    blur += (want - blur) * std::min(1.0f, ImGui::GetIO().DeltaTime * 14.0f);
+    app::g_backdrop_blur = std::fabs(want - blur) < 0.01f ? want : blur;
     if (open) Menu(st);
     st.was_open = open;
     FrameCounter(fps);

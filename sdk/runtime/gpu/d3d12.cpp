@@ -115,7 +115,7 @@ bool CaptureOn() {
 }
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
@@ -132,9 +132,24 @@ float4 psmain(O i) : SV_Target {
     float4 c = 0;
     int n = max((int)opts.z, 1);
     float2 px = fwidth(i.uv);
-    for (int y = 0; y < n; y++)
-        for (int x = 0; x < n; x++) c += img.SampleLevel(ls, i.uv + px * ((float2(x, y) + 0.5) / n - 0.5), 0);
-    c /= n * n;
+    if (opts2.x > 0) {
+        // a disc of opts2.x pixels, its taps on a golden angle spiral turned a little per pixel (noise, not ghosts),
+        // weighted to the centre
+        float turn = frac(52.9829189 * frac(dot(i.p.xy, float2(0.06711056, 0.00583715)))) * 6.2831853;
+        float w = 0;
+        for (int k = 0; k < 64; k++) {
+            float t = (k + 0.5) / 64;
+            float a = turn + k * 2.39996323;
+            float tw = exp(-2.5 * t);
+            c += img.SampleLevel(ls, i.uv + px * opts2.x * sqrt(t) * float2(cos(a), sin(a)), 0) * tw;
+            w += tw;
+        }
+        c /= w;
+    } else {
+        for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++) c += img.SampleLevel(ls, i.uv + px * ((float2(x, y) + 0.5) / n - 0.5), 0);
+        c /= n * n;
+    }
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
@@ -380,6 +395,7 @@ struct BlitOptions {
     float mul = 1;            // colour scale
     DXGI_FORMAT rtv = kBgra;  // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
+    float blur = 0;           // a disc blur of this radius in target pixels, in place of taps
 };
 
 // Shrink's settings past the source and the size
@@ -1370,8 +1386,9 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
-    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
-                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
+    float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
+                   o.blur, 0, 0, 0};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
@@ -3078,7 +3095,8 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
+    // the frame blurred behind a game's menu (app::g_backdrop_blur)
+    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .blur = app::g_backdrop_blur.load() * float(bb_h_) / 60.0f});
 }
 
 void D3D12Backend::RenderUi() {

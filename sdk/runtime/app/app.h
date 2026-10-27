@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -71,6 +72,8 @@ void FinishHandover();  // any thread but the window thread's: opens the game wi
 
 // held around ImGui: the window thread's messages and the renderer's frame
 std::recursive_mutex& UiLock();
+// 0 to 1: the game's frame blurred behind a menu the game draws with ImGui, from the next frame
+inline std::atomic<float> g_backdrop_blur{0};
 
 // what the game repo defines once
 struct Option {  // a setting in the settings file, flag or value
