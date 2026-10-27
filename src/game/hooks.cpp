@@ -5,6 +5,7 @@
 // from the export ids the image's .XTLID lists them under (the runtime logs them at boot as "dsound: exports running
 // their original code") and from their code.
 
+#include <cstdlib>
 #include <cstring>
 
 #include "core/log.h"
@@ -110,4 +111,30 @@ X86_FUNC(sub_0006C040) {
     __imp__sub_0006C040(ctx, base);
     ::kernel::W32(kBrightness, saved);
     LOG_FIRST(1, "cmr: rally display ramp built without the stage's brightness boost");
+}
+
+// XBE_GRASS_PROBE: the grass's view volume. The grass pieces (sub_0005C8D0 then sub_0005CFC0, quads through EndPush)
+// are each tested against the object at [viewport + 0x7A20] (sub_000D77C0), the viewports 0x8B70 bytes apart from
+// [0x5F8330]. Logs that object's first 0x100 bytes as floats and the positions at +0x6B50 and +0x6D50 now and then.
+X86_EXTERN_FUNC(__imp__sub_0005C8D0);
+X86_FUNC(sub_0005C8D0) {
+    static const bool probe = std::getenv("XBE_GRASS_PROBE") != nullptr;
+    static uint32_t calls = 0, logged = 0;
+    uint32_t vp = Arg(ctx, 0);
+    if (probe && vp == 0 && ++calls % 300 == 0 && logged < 4) {
+        logged++;
+        uint32_t rec = ::kernel::R32(0x5F8330) + vp * 0x8B70, fr = ::kernel::R32(rec + 0x7A20);
+        auto f = [](uint32_t a) {
+            uint32_t b = ::kernel::R32(a);
+            float v;
+            std::memcpy(&v, &b, 4);
+            return v;
+        };
+        LOGI("cmr: grass probe %u: +6B50 %.2f %.2f %.2f, +6D50 %.2f %.2f %.2f, volume %08X", logged, f(rec + 0x6B50),
+             f(rec + 0x6B54), f(rec + 0x6B58), f(rec + 0x6D50), f(rec + 0x6D54), f(rec + 0x6D58), fr);
+        for (uint32_t o = 0; fr && o < 0x100; o += 0x20)
+            LOGI("cmr:   +%02X %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f", o, f(fr + o), f(fr + o + 4),
+                 f(fr + o + 8), f(fr + o + 12), f(fr + o + 16), f(fr + o + 20), f(fr + o + 24), f(fr + o + 28));
+    }
+    __imp__sub_0005C8D0(ctx, base);
 }
