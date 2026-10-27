@@ -90,6 +90,7 @@ std::vector<std::pair<uint32_t, uint32_t>> Modes() {
 struct State {
     bool was_open = false;
     bool changed = false;
+    bool quit_armed = false;  // Quit to desktop pressed once
     int tab = 0, shown_tab = -1;
     std::vector<std::pair<uint32_t, uint32_t>> modes;
 };
@@ -290,7 +291,7 @@ void Menu(State& st) {
     // the screen dimmed behind it
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(0, 0, 0, 110));
     float fs = ImGui::GetFontSize();
-    ImVec2 size(std::min(screen.x * 0.9f, fs * 30), std::min(screen.y * 0.9f, fs * 22));
+    ImVec2 size(std::min(screen.x * 0.9f, fs * 30), std::min(screen.y * 0.9f, fs * 24));
     ImGui::SetNextWindowPos(ImVec2((screen.x - size.x) / 2, (screen.y - size.y) / 2));
     ImGui::SetNextWindowSize(size);
     if (!st.was_open) ImGui::SetNextWindowFocus();
@@ -336,6 +337,19 @@ void Menu(State& st) {
         default: Overlay(st); break;
     }
     ImGui::PopID();
+
+    // under every section: back to the desktop, asked twice so a stray press does not end the game
+    ImGui::Dummy(ImVec2(0, fs * 1.2f));
+    if (Row("Quit to desktop", st.quit_armed ? "Press again to quit" : "")) {
+        if (st.quit_armed) {
+            if (st.changed) app::Save();
+            LOGI("menu: quit to desktop");
+            PostMessageW(static_cast<HWND>(app::Window()), WM_CLOSE, 0, 0);
+        }
+        st.quit_armed = true;
+    } else if (!ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
+        st.quit_armed = false;
+    }
 
     // the keys, and the build
     float fy = at.y + size.y - foot;
@@ -406,6 +420,7 @@ void Draw(double fps) {
     if (open && !st.was_open) {
         st.modes = Modes();
         st.changed = false;
+        st.quit_armed = false;
     }
     if (!open && st.was_open && st.changed) {
         app::Save();
