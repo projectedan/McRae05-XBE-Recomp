@@ -15,6 +15,8 @@ void Init();  // window thread, before boot; the game code window starts it earl
 uint16_t HeldOnAnyController();  // face buttons as XINPUT_GAMEPAD_A/B/X/Y masks, GameInfo::pad left out
 // the controller on that port, then GameInfo::pad
 Pad Poll(int port);
+// the controller on that port as it is, without GameInfo::pad (the port's own menus)
+Pad Read(int port);
 void Rumble(int port, uint16_t left, uint16_t right);
 
 }  // namespace input

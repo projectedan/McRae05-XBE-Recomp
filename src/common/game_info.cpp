@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "common/cmr.h"
 #include "core/log.h"
 
 #if __has_include("build_id.h")
@@ -12,19 +13,30 @@ void SetMix(float dialogue, float front, float centre, float back, float sub, ui
 void SetEffects(bool gp);
 }
 
-namespace {
+namespace cmr {
 // the stereo mix, in the settings file: each a percent of the default level (100), mix_sub_hz where the low frequency
 // channel's low pass starts (0 keeps its whole range)
 uint32_t g_mix_dialogue = 100, g_mix_front = 100, g_mix_centre = 100, g_mix_back = 100, g_mix_sub = 100,
          g_mix_sub_hz = 0;
+uint32_t g_show_fps = 0;
+
+void ApplyMix() {
+    auto pc = [](uint32_t v, float base) { return base * float(v) / 100.0f; };
+    xdk::SetMix(pc(g_mix_dialogue, 1.0f), pc(g_mix_front, 1.0f), pc(g_mix_centre, 0.707f), pc(g_mix_back, 0.707f),
+                pc(g_mix_sub, 0.316f), g_mix_sub_hz);
+}
+
+const char* BuildId() { return CMR_BUILD_ID; }
+}  // namespace cmr
+
+namespace {
+using namespace cmr;
 // the audio effects: 1 runs the game's own on the emulated GP, 0 the hand-written stand-ins used before it
 uint32_t g_audio_effects = 1;
 
 void Init() {
     LOGI("cmr2005: build %s", CMR_BUILD_ID);
-    auto pc = [](uint32_t v, float base) { return base * float(v) / 100.0f; };
-    xdk::SetMix(pc(g_mix_dialogue, 1.0f), pc(g_mix_front, 1.0f), pc(g_mix_centre, 0.707f), pc(g_mix_back, 0.707f),
-                pc(g_mix_sub, 0.316f), g_mix_sub_hz);
+    ApplyMix();
     xdk::SetEffects(g_audio_effects != 0);
 }
 }  // namespace
@@ -42,14 +54,14 @@ const app::GameInfo app::kGame = {
     .options = {{"mix_dialogue", nullptr, &g_mix_dialogue}, {"mix_front", nullptr, &g_mix_front},
                 {"mix_centre", nullptr, &g_mix_centre},     {"mix_back", nullptr, &g_mix_back},
                 {"mix_sub", nullptr, &g_mix_sub},           {"mix_sub_hz", nullptr, &g_mix_sub_hz},
-                {"audio_effects", nullptr, &g_audio_effects}},
+                {"audio_effects", nullptr, &g_audio_effects}, {"show_fps", nullptr, &g_show_fps}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = Init,                         // after the settings load, before the window and boot
     .loaded = nullptr,                    // image in memory, before its entry point runs
-    .window = nullptr,                    // the game window is up
-    .message = nullptr,                   // window messages first; true takes one
-    .ui = nullptr,                        // ImGui drawing each frame
-    .pad = nullptr,                       // changes a polled pad
+    .window = cmr::menu::Window,          // the game window is up
+    .message = cmr::menu::Message,        // window messages first; true takes one
+    .ui = cmr::menu::Draw,                // ImGui drawing each frame
+    .pad = cmr::menu::Pad,                // changes a polled pad
     .rumble = nullptr,                    // changes a rumble before it is set
 };

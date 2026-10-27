@@ -81,6 +81,12 @@ void Init() {
 }
 
 Pad Poll(int port) {
+    Pad p = Read(port);
+    if (app::kGame.pad) app::kGame.pad(port, p);
+    return p;
+}
+
+Pad Read(int port) {
     Pad p;
     {
         std::lock_guard lock(g_lock);
@@ -109,7 +115,6 @@ Pad Poll(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
-    if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }
 
