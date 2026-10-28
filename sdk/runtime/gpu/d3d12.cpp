@@ -13,9 +13,11 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -112,6 +114,21 @@ struct PerfScope {
 bool CaptureOn() {
     if (diag::CaptureDir().empty()) LOG_FIRST(1, "capture: set XBE_CAPTURE_DIR");
     return !diag::CaptureDir().empty();
+}
+
+// XBE_CAPTURE_AT=first:step:count: a capture at those presents too, for what passes before F3 can be pressed (the
+// boot videos)
+bool CaptureAt(uint64_t present) {
+    static const std::array<uint64_t, 3> at = [] {
+        std::array<uint64_t, 3> v{0, 1, 0};
+        if (const char* e = std::getenv("XBE_CAPTURE_AT"))
+            std::sscanf(e, "%llu:%llu:%llu", reinterpret_cast<unsigned long long*>(&v[0]),
+                        reinterpret_cast<unsigned long long*>(&v[1]), reinterpret_cast<unsigned long long*>(&v[2]));
+        return v;
+    }();
+    if (!at[2] || !at[1] || present < at[0]) return false;
+    uint64_t i = present - at[0];
+    return i % at[1] == 0 && i / at[1] < at[2];
 }
 
 const char* kBlitHlsl = R"(
@@ -3369,7 +3386,7 @@ void D3D12Backend::Present(const Surface& front) {
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
-    } else if (g_capture.exchange(false) && CaptureOn()) {
+    } else if ((g_capture.exchange(false) || CaptureAt(presents_)) && CaptureOn()) {
         StartCapture();
     }
     ResizeSwap();
