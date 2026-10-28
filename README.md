@@ -15,17 +15,39 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ## Features
 
-### Display
+### Settings Overlay
+Press **F1**, or **Back + Start** on a controller, to open the overlay menu over the game (the game blurs behind it).
+Changes apply at once and are saved to `settings.toml`.
 
+### Display
+- **Display mode** - Fullscreen, borderless or windowed, at any resolution.
+- **Frame pacing** - A steady 60 fps cap with even frame times (the game steps its physics once per frame, so it stays at 60).
+- **Frame counter** - Optional on-screen FPS.
 
 ### Graphics
+- **Render resolution** - Renders well above the console's 640x480, scaled to your output resolution.
+- **Anisotropic filtering** - Up to 16x.
+- **Anti-aliasing** - FXAA or SMAA.
+- **Shader cache** - Compiled shaders are kept in `shader_cache` beside the exe, so stutter from shader compiles only
+  happens the first time each one is seen.
+- **Fixes** - Corrected road and track rendering, brightness and gamma, depth of field, the loading screen logo and the
+  speedometer's warning lamps.
+
+### Audio
+- The game's own audio effects (reverb, engine filtering) run as on the console, on an emulated Xbox audio DSP.
+- Surround folded down to stereo; the mix levels can be adjusted in `settings.toml` (`mix_` keys).
 
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 
-### General
+### Mods
+- **Texture packs** - PNG images in `textures\replacement` beside the exe replace the game's textures, at any
+  resolution, and update while the game runs. Set `dump_textures = true` in `settings.toml` to save the game's own
+  textures to `textures\dumps`, already named as their replacements must be.
+- **File overrides** - Files in a `mods` folder beside the exe replace the game's files of the same path.
 
 ### Miscellaneous
+- **Skipped logo** - The "Codemasters presents" screen at start is skipped (the Dolby and Codemasters videos still play).
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 
 ## System Requirements
