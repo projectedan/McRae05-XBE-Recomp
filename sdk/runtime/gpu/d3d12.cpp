@@ -21,6 +21,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -96,6 +97,7 @@ struct Perf {
     uint64_t syncs = 0;
     uint64_t psos = 0;
     uint64_t shaders = 0;
+    uint64_t shaders_cached = 0;  // loaded from shader_cache rather than compiled
     uint64_t raw = 0;
     uint64_t lates = 0;
     uint64_t gpu_frames = 0;
@@ -674,6 +676,7 @@ private:
     // Present, in call order, each callee right after its caller; DrawFrame runs the two after it
     void FinishCapture(const Surface& front);
     void StartCapture();
+    bool cap_boot_ = false;  // the first frame's capture started at its first draw (XBE_CAPTURE_AT from 0)
     void ResizeSwap();
     void UploadGammaRamp();
     void DrawFrame(Target* t, uint32_t bi);
@@ -1472,6 +1475,49 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
 
+// Compiled shaders on disk, shader_cache\ beside the exe, one file a shader named by its source's hash: a stage's
+// shaders compile once (up to 0.6 s at a stage start), later runs load them. The version goes into the name; raise
+// it when the compile flags change.
+constexpr uint32_t kShaderCacheVersion = 1;
+
+std::filesystem::path ShaderCachePath(uint64_t hash) {
+    static const std::filesystem::path dir = app::ExeDir() / "shader_cache";
+    char name[40];
+    std::snprintf(name, sizeof name, "%016llx_v%u.dxbc", static_cast<unsigned long long>(hash), kShaderCacheVersion);
+    return dir / name;
+}
+
+// a cached shader, null when there is none or the file is not a whole DXBC container (magic, then its size at +24)
+ComPtr<ID3DBlob> LoadCachedShader(uint64_t hash) {
+    std::ifstream f(ShaderCachePath(hash), std::ios::binary | std::ios::ate);
+    if (!f) return nullptr;
+    std::streamoff size = f.tellg();
+    if (size < 32 || size > (16 << 20)) return nullptr;
+    ComPtr<ID3DBlob> blob;
+    if (FAILED(D3DCreateBlob(size_t(size), &blob))) return nullptr;
+    f.seekg(0);
+    auto* p = static_cast<char*>(blob->GetBufferPointer());
+    if (!f.read(p, size)) return nullptr;
+    uint32_t total;
+    std::memcpy(&total, p + 24, 4);
+    if (std::memcmp(p, "DXBC", 4) || total != uint32_t(size)) return nullptr;
+    return blob;
+}
+
+// written beside, then renamed: a run that stops halfway leaves no partial shader
+void SaveCachedShader(uint64_t hash, ID3DBlob* blob) {
+    std::filesystem::path path = ShaderCachePath(hash), tmp = path;
+    tmp += ".tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    {
+        std::ofstream f(tmp, std::ios::binary);
+        if (!f.write(static_cast<const char*>(blob->GetBufferPointer()), std::streamsize(blob->GetBufferSize()))) return;
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
+}
+
 ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
     // one source can hold several entry points
     uint64_t profile_seed = Hash(profile, std::strlen(profile));
@@ -1479,9 +1525,14 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
     hash = Hash(src.data(), src.size(), entry_seed);
     auto it = blobs_.find(hash);
     if (it != blobs_.end()) return it->second.Get();
+    PerfScope perf_compile{g_perf.compile};
+    if (ComPtr<ID3DBlob> cached = LoadCachedShader(hash)) {
+        g_perf.shaders_cached++;
+        blobs_[hash] = cached;
+        return cached.Get();
+    }
     ComPtr<ID3DBlob> code;
     ComPtr<ID3DBlob> err;
-    PerfScope perf_compile{g_perf.compile};
     g_perf.shaders++;
     HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
                             D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
@@ -1491,6 +1542,7 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
         blobs_[hash] = nullptr;
         return nullptr;
     }
+    SaveCachedShader(hash, code.Get());
     blobs_[hash] = code;
     return code.Get();
 }
@@ -2767,6 +2819,11 @@ void D3D12Backend::DeliverReports() {
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
+    // XBE_CAPTURE_AT from 0: the title's first frame, drawn before any present, is captured from its first draw
+    if (!cap_ && !presents_ && !cap_boot_ && CaptureAt(0) && CaptureOn()) {
+        cap_boot_ = true;
+        StartCapture();
+    }
     if (cap_) CapStep(s.rt);
     if (DepthCopy(s)) return;
     DrawEnd draw_end{ext_};
@@ -3145,10 +3202,11 @@ void D3D12Backend::FinishCapture(const Surface& front) {
 void D3D12Backend::StartCapture() {
     SYSTEMTIME tm;
     GetLocalTime(&tm);
-    // the time, then the present: captures a second apart or less (XBE_CAPTURE_AT) keep folders of their own
+    // the time, then the present that shows the frame: captures a second apart or less (XBE_CAPTURE_AT) keep folders
+    // of their own
     char stamp[48];
     snprintf(stamp, sizeof(stamp), "%02u%02u%02u_f%05llu", tm.wHour, tm.wMinute, tm.wSecond,
-             static_cast<unsigned long long>(presents_));
+             static_cast<unsigned long long>(cap_boot_ && !presents_ ? 0 : presents_ + 1));
     std::error_code ec;
     cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
     std::filesystem::create_directories(cap_dir_, ec);
@@ -3373,11 +3431,11 @@ void LogPerf() {
              g_perf_sync_late.exchange(0) / n);
         LOGI("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.0f checks %.2f MB "
              "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
-             "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
+             "%.1f read-backs %.1f late | %llu shaders (%llu from the cache) %llu psos this second",
              p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
              p.sig_bytes / n / 1048576.0, p.texups / n, p.texup_bytes / n / 1048576.0, p.newtex / n,
              p.targets / n, p.rtups / n, p.shrinks / n, p.syncs / n, p.lates / n,
-             (unsigned long long)p.shaders, (unsigned long long)p.psos);
+             (unsigned long long)p.shaders, (unsigned long long)p.shaders_cached, (unsigned long long)p.psos);
         g_perf = Perf{};
         perf_start = PerfClock::now();
         perf_frames = 0;
