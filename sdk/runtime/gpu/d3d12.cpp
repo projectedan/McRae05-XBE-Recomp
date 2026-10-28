@@ -481,7 +481,6 @@ struct DrawShaders {
     bool prog = false;  // a vertex program, else the fixed function pipeline
     bool quad = false;
     bool fixed_transform = false;  // fixed function on untransformed vertices: the shader reads matrices and lights
-    bool screen = false;  // positions in screen pixels as they come: pretransformed, or a program passing v0 through
     FixedKey fk;
     uint64_t vkey = 0;
     uint64_t vh = 0;
@@ -777,7 +776,6 @@ private:
     std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
-    std::unordered_set<uint64_t> screen_vs_;  // vertex shader keys of 2D programs (ScreenSpaceProgram)
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -2107,72 +2105,16 @@ std::string VertexHlsl(const State& s, const Assembled& a, const DrawShaders& sh
 }
 
 // sets sh.vh and sh.vs_code, compiling the shader on a cache miss
-// a vertex program whose only position is its first input, as it comes or moved by a constant (CMR's 2D program
-// adds c1, the XDK's screen space offset): its draws are 2D in screen pixels
-bool ScreenSpaceProgram(const std::string& src) {
-    size_t at = src.find("oPos.");
-    if (at == std::string::npos || src.find("oPos.", at + 1) != std::string::npos) return false;
-    size_t line = src.rfind("precise float4 mr", at);
-    if (line == std::string::npos) return false;
-    std::string mr = src.substr(line, at - line);
-    return mr.find("(i.v0).xyzw") != std::string::npos && mr.find("dot(") == std::string::npos &&
-           mr.find("mac_mul") == std::string::npos;
-}
-
 void D3D12Backend::EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh) {
     auto vit = shader_src_.find(sh.vkey);
     if (vit != shader_src_.end()) {
         sh.vs_code = blobs_[vit->second].Get();
         sh.vh = vit->second;
-        sh.screen = a.pretransformed || screen_vs_.count(sh.vkey);
         return;
     }
     std::string src = VertexHlsl(s, a, sh);
-    if (sh.prog && ScreenSpaceProgram(src)) screen_vs_.insert(sh.vkey);
-    sh.screen = a.pretransformed || screen_vs_.count(sh.vkey);
     sh.vs_code = Compile(sh.quad ? QuadHlsl(std::move(src)) : src, "main", "vs_5_0", sh.vh);
     shader_src_[sh.vkey] = sh.vh;
-}
-
-// the leftmost and rightmost x of a draw's first input register (its screen position), false without one
-bool ScreenXRange(const Assembled& a, float& lo, float& hi) {
-    lo = 1e30f;
-    hi = -1e30f;
-    if (!(a.regs & 1)) return false;
-    if (!a.vertices.empty()) {
-        uint32_t n = 0;
-        for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
-        for (size_t v = 0; v * n * 4 < a.vertices.size() && v < 4096; v++) {
-            float x = a.vertices[v * n * 4];
-            lo = std::min(lo, x);
-            hi = std::max(hi, x);
-        }
-        return lo <= hi;
-    }
-    const VertexElement& e = a.elements[0];
-    const VertexBuffer& b = a.buffers[e.buffer];
-    if (!b.src || !b.stride) return false;
-    for (uint32_t v = 0; size_t(v) * b.stride + e.offset + 4 <= b.bytes && v < 4096; v++) {
-        float x;
-        std::memcpy(&x, b.src + size_t(v) * b.stride + e.offset, 4);
-        lo = std::min(lo, x);
-        hi = std::max(hi, x);
-    }
-    return lo <= hi;
-}
-
-// A widescreen display shows the title's 4:3 frame 16:9. CMR draws its 3D for that (its projection takes the
-// widescreen flag) but lays out 2D for 4:3, which the display widens by a third. A 2D draw into a 4:3 target is
-// narrowed back to its shape: one in the left third keeps to the left edge, the right third to the right, the rest
-// to the middle. Full width layers (backdrops, screen passes) keep their width.
-void Squeeze2D(const Assembled& a, bool screen, uint32_t w, uint32_t h, float* out) {
-    if (!screen || !app::Get().fit_2d || !app::Widescreen() || w * 3 != h * 4) return;
-    float lo, hi;
-    if (!ScreenXRange(a, lo, hi) || (lo <= 2 && hi >= float(w) - 2)) return;
-    constexpr float k = 0.75f;  // 4:3 in 16:9
-    float c = (lo + hi) / 2, fw = float(w);
-    out[0] = k;
-    out[1] = c < fw / 3 ? 0 : c > fw * 2 / 3 ? fw * (1 - k) : fw / 2 * (1 - k);
 }
 
 bool D3D12Backend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
@@ -2854,7 +2796,6 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     GuestExtent size;
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
-    Squeeze2D(a, sh.screen, size.w, size.h, c.squeeze);
     UploadConstants(s, sh, k, stages, size, c);
 
     if (cap_) {
