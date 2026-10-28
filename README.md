@@ -1,6 +1,6 @@
 # Colin McRae Rally 2005 - XBE Recomp
 
-An unofficial native PC port of the original Xbox version of Colin McRae Rally 2005, with extended graphics options and other enhancements.
+An unofficial native PC port of the original Xbox version of Colin McRae Rally 2005, with extended graphics options and other enhancements. A PC version of the game already exists, however it does not feature modern controller support or 64bit support. This port aims to provide an easily accessible way to enjoy a classic arcade rally game.
 
 This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool.
 
