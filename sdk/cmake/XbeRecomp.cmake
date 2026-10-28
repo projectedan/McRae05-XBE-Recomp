@@ -123,6 +123,14 @@ function(add_xbe_image target xbe config partitions game_dir)
     set_target_properties(${target} PROPERTIES ENABLE_EXPORTS ON ARCHIVE_OUTPUT_DIRECTORY ${XBE_COMPILER_DIR})
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${XBE_SDK_DIR}/runtime ${GEN})
     target_include_directories(${target} SYSTEM PRIVATE ${imgui_SOURCE_DIR})
+    # SMAA's shader (third_party/smaa, unchanged) as a C++ string the renderer compiles
+    set(smaa_src ${XBE_SDK_DIR}/third_party/smaa/SMAA.hlsl)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${smaa_src})
+    file(READ ${smaa_src} smaa_text)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/smaa/smaa_hlsl.inc "R\"SMAA(${smaa_text})SMAA\"\n")
+    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/smaa ${XBE_SDK_DIR}/third_party/smaa)
+    # its comments carry Latin-1 bytes (a middle dot), which land in the string as they are
+    set_source_files_properties(${XBE_SDK_DIR}/runtime/gpu/d3d12.cpp PROPERTIES COMPILE_OPTIONS -Wno-invalid-source-encoding)
     target_compile_options(${target} PRIVATE -fno-strict-aliasing)
     # ImGui's gamepad is fed from SDL (input::Read) where a game draws a menu, so every pad SDL reads steers it
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)

@@ -225,9 +225,9 @@ void Graphics(State& st) {
         st.changed = true;
     }
     Heading("Anti-aliasing");
-    static const char* kAa[] = {"Off", "FXAA"};
-    if (int step = Row("Edge smoothing", kAa[std::min(s.aa, 1u)])) {
-        s.aa = (std::min(s.aa, 1u) + 2 + uint32_t(step)) % 2;
+    static const char* kAa[] = {"Off", "FXAA", "SMAA"};
+    if (int step = Row("Edge smoothing", kAa[std::min(s.aa, 2u)])) {
+        s.aa = (std::min(s.aa, 2u) + 3 + uint32_t(step)) % 3;
         st.changed = true;
     }
     Heading("Menus and HUD");

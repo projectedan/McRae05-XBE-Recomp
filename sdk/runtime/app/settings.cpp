@@ -54,7 +54,7 @@ void Load() {
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
     s.sharp_2d = t["sharp_2d"].value_or(s.sharp_2d);
-    s.aa = std::min(t["anti_aliasing"].value_or(s.aa), 1u);
+    s.aa = std::min(t["anti_aliasing"].value_or(s.aa), 2u);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);

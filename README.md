@@ -54,6 +54,7 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+- [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez and others for the SMAA anti-aliasing option (`sdk/third_party/smaa`).
 - [xemu](https://github.com/xemu-project/xemu)'s DSP56300 interpreter and DSP DMA unit, which run the game's own audio effects (`sdk/third_party/xemu-dsp`).
 
 ## License
