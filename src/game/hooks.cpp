@@ -144,8 +144,17 @@ X86_FUNC(sub_0005C8D0) {
 // wide; their dark dot starts at texel 39, so the game cuts half its first column, which the console's 640x480 hides
 // and render scale 3 shows as a flat edge. Each label starts a pixel and a texel further left: the whole dot, the text
 // where it was. sub_0017FC90(sprites, count) draws 0x28 byte records: colour, u0 u1 v0 v1, x0 x1 y0 y1, z.
+// The boot's "Codemasters presents" (sub_00025630, codie.dds) is one frame: the game releases the texture straight
+// after, and the render thread, behind the game, drew freed memory as a garbled strip. Waiting for it on every release
+// stuttered stages, so that sprite is not drawn and the frame stays black.
 X86_EXTERN_FUNC(__imp__sub_0017FC90);
 X86_FUNC(sub_0017FC90) {
+    constexpr uint32_t kCodemastersPresents = 0x25774;  // return address of the logo's draw in sub_00025630
+    if (::kernel::R32(ctx.esp) == kCodemastersPresents) {
+        LOG_FIRST(1, "cmr: boot logo (Codemasters presents) skipped");
+        ::kernel::Return(ctx, 0, 2);
+        return;
+    }
     uint32_t sprites = Arg(ctx, 0), count = Arg(ctx, 1);
     auto f = [](uint32_t a) {
         uint32_t b = ::kernel::R32(a);
