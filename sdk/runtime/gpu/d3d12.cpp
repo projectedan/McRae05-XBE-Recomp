@@ -270,8 +270,58 @@ constexpr uint32_t kFmtLinD16 = 0x30;  // D3DFMT_LIN_D16
 // TexInfo::shadow of a depth texture
 uint8_t ShadowDepthKind(uint32_t format) { return format == kFmtD16 || format == kFmtLinD16 ? 2 : 1; }
 
-// bytes per row of a 32 bit surface in guest memory, rounded to 64
-uint32_t GuestPitch(uint32_t width) { return (width * 4 + 63) & ~63u; }
+// bytes a pixel of a colour target in guest memory: 2 for the 16 bit formats (CMR's 180x180 sun target is
+// LIN_R5G6B5), else 4
+uint32_t GuestBpp(uint32_t format) { return Format(format).bits == 16 ? 2 : 4; }
+
+// a row of BGRA8 pixels into a colour target's format in guest memory
+void EncodeRow(uint32_t format, const uint8_t* bgra, uint8_t* out, uint32_t w) {
+    if (GuestBpp(format) == 4) {
+        std::memcpy(out, bgra, size_t(w) * 4);
+        return;
+    }
+    for (uint32_t x = 0; x < w; x++) {
+        uint32_t b = bgra[x * 4], g = bgra[x * 4 + 1], r = bgra[x * 4 + 2], a = bgra[x * 4 + 3];
+        uint16_t v;
+        switch (format) {
+            case 0x05: case 0x11: v = uint16_t((r >> 3) << 11 | (g >> 2) << 5 | b >> 3); break;  // R5G6B5
+            case 0x04: case 0x1D: v = uint16_t((a >> 4) << 12 | (r >> 4) << 8 | (g >> 4) << 4 | b >> 4); break;
+            default: v = uint16_t((a >= 128) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3); break;  // 1555
+        }
+        std::memcpy(out + x * 2, &v, 2);
+    }
+}
+
+// a pixel of a colour target's format in guest memory into BGRA8
+void DecodePixel(uint32_t format, const uint8_t* in, uint8_t* bgra) {
+    if (GuestBpp(format) == 4) {
+        std::memcpy(bgra, in, 4);
+        return;
+    }
+    uint16_t v;
+    std::memcpy(&v, in, 2);
+    auto x5 = [](uint32_t c) { return uint8_t(c << 3 | c >> 2); };
+    switch (format) {
+        case 0x05: case 0x11:
+            bgra[0] = x5(v & 31);
+            bgra[1] = uint8_t((v >> 5 & 63) << 2 | (v >> 5 & 63) >> 4);
+            bgra[2] = x5(v >> 11 & 31);
+            bgra[3] = 255;
+            break;
+        case 0x04: case 0x1D:
+            bgra[0] = uint8_t((v & 15) * 17);
+            bgra[1] = uint8_t((v >> 4 & 15) * 17);
+            bgra[2] = uint8_t((v >> 8 & 15) * 17);
+            bgra[3] = uint8_t((v >> 12) * 17);
+            break;
+        default:
+            bgra[0] = x5(v & 31);
+            bgra[1] = x5(v >> 5 & 31);
+            bgra[2] = x5(v >> 10 & 31);
+            bgra[3] = v >> 15 ? 255 : 0;
+            break;
+    }
+}
 
 // rows of a texture upload start D3D12_TEXTURE_DATA_PITCH_ALIGNMENT apart
 uint32_t UploadPitch(uint32_t row_bytes) { return (row_bytes + 255) & ~255u; }
@@ -322,8 +372,8 @@ uint64_t MemSig(uint32_t data, uint32_t total) {
 // MemSig samples a big surface and misses small writes (XFONT text): after a Sync every byte is compared
 bool Changed(const Target& t) {
     if (t.drawn || t.read.empty()) return false;
-    uint32_t row = t.gw * 4;
-    uint32_t pitch = GuestPitch(t.gw);
+    uint32_t row = t.gw * GuestBpp(t.gformat);
+    uint32_t pitch = t.gpitch;
     const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(t.data));
     for (uint32_t y = 0; y < t.gh; y++) {
         if (std::memcmp(p + size_t(y) * pitch, &t.read[size_t(y) * row], row)) return true;
@@ -769,6 +819,7 @@ private:
         // was written by the CPU since, which a copy taken before must not cover
         uint64_t sig[kFrames] = {};
         uint64_t written = 0;
+        uint32_t gformat = 0, gpitch = 0, bytes = 0;  // the target's, as Target
         uint32_t gw = 0;
         uint32_t gh = 0;
         uint32_t row_pitch = 0;
@@ -1167,7 +1218,11 @@ Target* D3D12Backend::EnsureTarget(const Surface& s, bool depth) {
     // an empty pool drops the new resource with t
     if (!CreateTargetView(t)) return nullptr;
     t.data = slot.data;
-    t.bytes = GuestPitch(slot.gw) * slot.gh;
+    // the console surface's own format and pitch: a 16 bit target takes half the memory a 32 bit one would
+    TextureDesc sd;
+    t.gformat = DescribeSurface(s, sd) ? sd.format : 0x12;
+    t.gpitch = sd.pitch ? sd.pitch : (slot.gw * GuestBpp(t.gformat) + 63) & ~63u;
+    t.bytes = t.gpitch * slot.gh;
     if (depth) t.bytes = slot.gw * slot.gh * 4;
     t.epoch = DirtyEpoch(slot.data);
     t.sig = MemSig(slot.data, t.bytes);
@@ -1273,17 +1328,17 @@ bool D3D12Backend::DepthCopy(const State& s) {
 
 // the pixels the CPU changed since the last Sync, opaque, the rest 0; t.read takes them
 std::vector<uint8_t> LatchCpuChanges(Target& t) {
-    std::vector<uint8_t> px(t.read.size(), 0);
-    uint32_t guest_pitch = GuestPitch(t.gw);
+    uint32_t bpp = GuestBpp(t.gformat);
+    std::vector<uint8_t> px(size_t(t.gw) * t.gh * 4, 0);
     const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(t.data));
     for (uint32_t y = 0; y < t.gh; y++) {
         for (uint32_t x = 0; x < t.gw; x++) {
-            const uint8_t* c = guest + size_t(y) * guest_pitch + x * 4;
-            size_t i = (size_t(y) * t.gw + x) * 4;
-            if (!std::memcmp(c, &t.read[i], 4)) continue;
-            std::memcpy(&t.read[i], c, 4);
-            std::memcpy(&px[i], c, 3);
-            px[i + 3] = 255;
+            const uint8_t* c = guest + size_t(y) * t.gpitch + x * bpp;
+            size_t i = (size_t(y) * t.gw + x) * bpp, o = (size_t(y) * t.gw + x) * 4;
+            if (!std::memcmp(c, &t.read[i], bpp)) continue;
+            std::memcpy(&t.read[i], c, bpp);
+            DecodePixel(t.gformat, c, &px[o]);
+            px[o + 3] = 255;
         }
     }
     return px;
@@ -1318,7 +1373,8 @@ void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
     std::vector<uint8_t> px;
     uint32_t pitch;
     // after a Sync only the pixels the CPU changed go over the picture, which stays at render scale
-    bool over = !t.drawn && d.width == t.gw && d.height == t.gh && t.read.size() == size_t(t.gw) * t.gh * 4;
+    bool over = !t.drawn && d.width == t.gw && d.height == t.gh &&
+                t.read.size() == size_t(t.gw) * t.gh * GuestBpp(t.gformat);
     if (over) {
         LOG_FIRST(4, "d3d12: CPU pixels drawn over target %08X", t.data);
         pitch = t.gw * 4;
@@ -3409,11 +3465,15 @@ void D3D12Backend::Sync(uint32_t data, uint32_t) {
     if (!src.res) return;
     std::vector<uint8_t> px;
     if (!ReadBack(src.res, t.gw, t.gh, px)) return;
-    // color targets are 32 bit linear in guest memory, the pitch rounds to 64 bytes
-    uint32_t pitch = GuestPitch(t.gw);
+    // colour targets are linear in guest memory, in the surface's own format and pitch
+    uint32_t row = t.gw * GuestBpp(t.gformat);
     uint8_t* guest = static_cast<uint8_t*>(kernel::HostPtr(data));
-    for (uint32_t y = 0; y < t.gh; y++) std::memcpy(guest + size_t(y) * pitch, &px[size_t(y) * t.gw * 4], t.gw * 4);
-    t.read = std::move(px);
+    std::vector<uint8_t> read(size_t(row) * t.gh);
+    for (uint32_t y = 0; y < t.gh; y++) {
+        EncodeRow(t.gformat, &px[size_t(y) * t.gw * 4], &read[size_t(y) * row], t.gw);
+        std::memcpy(guest + size_t(y) * t.gpitch, &read[size_t(y) * row], row);
+    }
+    t.read = std::move(read);
     t.drawn = false;
     t.sig = MemSig(t.data, t.bytes);
 }
@@ -3452,8 +3512,7 @@ bool D3D12Backend::DeliverLate(uint32_t data) {
         // the CPU wrote here after the copy was taken (CMR reloads its loading-screen logo, 256x64 DXT1 at 035C7000,
         // into memory the stage's 180x180 target at 035B6000 covered, then locks that target once more): the console
         // reads the CPU's bytes, so the copy stays out of memory
-        uint32_t pitch = GuestPitch(l.gw);
-        uint64_t now = MemSig(data, pitch * l.gh);
+        uint64_t now = MemSig(data, l.bytes);
         if (now != l.sig[best] && now != l.written) {
             LOG_FIRST(8, "d3d12: late copy of %08X not delivered, the CPU wrote its memory since", data);
             l.delivered = l.fence[best];
@@ -3464,11 +3523,11 @@ bool D3D12Backend::DeliverLate(uint32_t data) {
         D3D12_RANGE rr{0, size_t(l.row_pitch) * (l.gh - 1) + l.gw * 4};
         if (FAILED(l.rb[best]->Map(0, &rr, reinterpret_cast<void**>(&p)))) return false;
         uint8_t* dst = static_cast<uint8_t*>(kernel::HostPtr(data));
-        for (uint32_t y = 0; y < l.gh; y++) std::memcpy(dst + size_t(y) * pitch, p + size_t(y) * l.row_pitch, l.gw * 4);
+        for (uint32_t y = 0; y < l.gh; y++) EncodeRow(l.gformat, p + size_t(y) * l.row_pitch, dst + size_t(y) * l.gpitch, l.gw);
         D3D12_RANGE none{0, 0};
         l.rb[best]->Unmap(0, &none);
         l.delivered = l.fence[best];
-        l.written = MemSig(data, pitch * l.gh);
+        l.written = MemSig(data, l.bytes);
     }
     return true;
 }
@@ -3544,6 +3603,9 @@ void D3D12Backend::RecordLate(uint32_t data) {
     if (!src) return;
     RecordLateCopy(l, slot, src);
     l.sig[slot] = t.sig;
+    l.gformat = t.gformat;
+    l.gpitch = t.gpitch;
+    l.bytes = t.bytes;
 }
 
 // filters src into a new w x h target, left as a copy source

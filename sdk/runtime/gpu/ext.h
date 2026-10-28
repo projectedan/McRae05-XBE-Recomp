@@ -28,9 +28,10 @@ struct Target {
     uint32_t view = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
     uint32_t data = 0, bytes = 0;
+    uint32_t gformat = 0, gpitch = 0;  // the console surface's format (NV2A code) and bytes per row
     uint64_t epoch = 0, sig = 0;  // last lock seen, guest memory as last matched
     bool drawn = false;           // the GPU wrote it since the last readback
-    std::vector<uint8_t> read;    // what Sync left in guest memory
+    std::vector<uint8_t> read;    // what Sync left in guest memory, rows packed in the surface's format
     Microsoft::WRL::ComPtr<ID3D12Resource> fb;  // copy read by draws that sample the target they render to
     D3D12_RESOURCE_STATES fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
     DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
