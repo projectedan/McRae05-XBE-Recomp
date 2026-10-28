@@ -26,3 +26,7 @@ settings.toml
 
 # Local temporary folder
 .local
+
+# Claude Code's private working notes
+CLAUDE.local.md
+__pycache__/
