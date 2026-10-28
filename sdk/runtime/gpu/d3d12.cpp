@@ -765,6 +765,10 @@ private:
         uint64_t fence[kFrames] = {};
         uint64_t frame[kFrames] = {};
         uint64_t delivered = 0;
+        // guest memory's signature as each copy was taken, and as the last delivery left it: memory matching neither
+        // was written by the CPU since, which a copy taken before must not cover
+        uint64_t sig[kFrames] = {};
+        uint64_t written = 0;
         uint32_t gw = 0;
         uint32_t gh = 0;
         uint32_t row_pitch = 0;
@@ -2439,6 +2443,14 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
             k.src, k.dst, k.op, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
             c.pc[0][2], c.pc[0][3], c.fog[0], c.fog[1], c.fog[2], c.fog[3], c.fog_color[0], c.fog_color[1],
             c.fog_color[2]);
+    // fixed function: the first two stages' combiners, colour op (arg0 arg1 arg2) then alpha op (args), D3DTOP/D3DTA
+    if (!s.ps) {
+        for (int i = 0; i < 2; i++) {
+            const auto& t = s.tss[size_t(i)];
+            fprintf(cap_, " ts%d c%X(%X %X %X) a%X(%X %X %X)", i, t[kTssColorOp], t[kTssColorArg0], t[kTssColorArg1],
+                    t[kTssColorArg2], t[kTssAlphaOp], t[kTssAlphaArg0], t[kTssAlphaArg1], t[kTssAlphaArg2]);
+        }
+    }
     CaptureTextures(s, stages);
 }
 
@@ -3437,16 +3449,26 @@ bool D3D12Backend::DeliverLate(uint32_t data) {
         return false;
     }
     if (l.fence[best] > l.delivered) {
+        // the CPU wrote here after the copy was taken (CMR reloads its loading-screen logo, 256x64 DXT1 at 035C7000,
+        // into memory the stage's 180x180 target at 035B6000 covered, then locks that target once more): the console
+        // reads the CPU's bytes, so the copy stays out of memory
+        uint32_t pitch = GuestPitch(l.gw);
+        uint64_t now = MemSig(data, pitch * l.gh);
+        if (now != l.sig[best] && now != l.written) {
+            LOG_FIRST(8, "d3d12: late copy of %08X not delivered, the CPU wrote its memory since", data);
+            l.delivered = l.fence[best];
+            return true;
+        }
         uint8_t* p = nullptr;
         // the last row is not padded to the pitch: a range to the end of the pitch fails to map
         D3D12_RANGE rr{0, size_t(l.row_pitch) * (l.gh - 1) + l.gw * 4};
         if (FAILED(l.rb[best]->Map(0, &rr, reinterpret_cast<void**>(&p)))) return false;
-        uint32_t pitch = GuestPitch(l.gw);
         uint8_t* dst = static_cast<uint8_t*>(kernel::HostPtr(data));
         for (uint32_t y = 0; y < l.gh; y++) std::memcpy(dst + size_t(y) * pitch, p + size_t(y) * l.row_pitch, l.gw * 4);
         D3D12_RANGE none{0, 0};
         l.rb[best]->Unmap(0, &none);
         l.delivered = l.fence[best];
+        l.written = MemSig(data, pitch * l.gh);
     }
     return true;
 }
@@ -3521,6 +3543,7 @@ void D3D12Backend::RecordLate(uint32_t data) {
     ID3D12Resource* src = PrepareLateSource(t, l);
     if (!src) return;
     RecordLateCopy(l, slot, src);
+    l.sig[slot] = t.sig;
 }
 
 // filters src into a new w x h target, left as a copy source
