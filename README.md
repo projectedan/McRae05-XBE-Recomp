@@ -22,6 +22,7 @@ Changes apply at once and are saved to `settings.toml`.
 ### Display
 - **Display mode** - Fullscreen, borderless or windowed, at any resolution.
 - **Frame pacing** - A steady 60 fps cap with even frame times (the game steps its physics once per frame, so it stays at 60).
+- **Brightness and gamma** - Adjust the picture from 50% to 150%.
 - **Frame counter** - Optional on-screen FPS.
 
 ### Graphics

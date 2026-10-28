@@ -30,6 +30,8 @@ struct Settings {
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     bool sharp_2d = true;            // 2D draws (menus, HUD, text) sample enlarged textures bicubic, sharper
     uint32_t aa = 0;                 // anti-aliasing of the finished frame: 0 off, 1 FXAA, 2 SMAA
+    uint32_t brightness = 100;       // percent: the finished frame's colour scaled by it (50 to 150)
+    uint32_t gamma = 100;            // percent: midtones raised above 100, lowered below (50 to 150)
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 

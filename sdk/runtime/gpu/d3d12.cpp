@@ -136,7 +136,7 @@ bool CaptureAt(uint64_t present) {
 }
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; float4 opts3; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
@@ -220,6 +220,8 @@ float4 psmain(O i) : SV_Target {
     }
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+    // the player's brightness (a scale) and gamma (a power, 1 / its setting)
+    if (opts3.x != 1 || opts3.y != 1) c.rgb = pow(saturate(c.rgb * opts3.x), opts3.y);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
 )";
@@ -580,6 +582,8 @@ struct BlitOptions {
     bool over = false;        // premultiplied over the target, which keeps its alpha
     float blur = 0;           // a disc blur of this radius in target pixels, in place of taps
     bool fxaa = false;        // edge smoothing (anti-aliasing) in the source's texels, in place of taps
+    float brightness = 1;     // colour scale after the gamma lookup
+    float power = 1;          // then colour to this power
 };
 
 // Shrink's settings past the source and the size
@@ -1599,9 +1603,10 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
     D3D12_RESOURCE_DESC sd = src->GetDesc();
-    float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+    float c[16] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
                    o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
-                   o.blur, o.fxaa ? 1.0f : 0.0f, 1.0f / float(sd.Width), 1.0f / float(sd.Height)};
+                   o.blur, o.fxaa ? 1.0f : 0.0f, 1.0f / float(sd.Width), 1.0f / float(sd.Height),
+                   o.brightness, o.power, 0, 0};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
@@ -3419,7 +3424,8 @@ void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* aa) {
     // anti-aliasing on the finished frame (the HUD with it), unless the menu's blur is over it
     Blit(aa ? aa : t.res.Get(), t.fmt, uv,
          {.gamma = gamma_, .blur = app::g_backdrop_blur.load() * float(bb_h_) / 60.0f,
-          .fxaa = !aa && app::Get().aa == 1});
+          .fxaa = !aa && app::Get().aa == 1, .brightness = float(app::Get().brightness) / 100.0f,
+          .power = 100.0f / float(app::Get().gamma)});
 }
 
 // a lookup table as a shader resource, uploaded once

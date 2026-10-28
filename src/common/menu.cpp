@@ -199,6 +199,17 @@ void Display(State& st) {
         app::ApplyDisplay();
         st.changed = true;
     }
+    Heading("Picture");
+    // 50% to 150% in steps of 5, 100% as the game made it
+    auto percent = [&](const char* label, uint32_t& v) {
+        std::snprintf(text, sizeof text, "%u%%", v);
+        if (int step = Row(label, text)) {
+            v = uint32_t(std::clamp(int(v) + step * 5, 50, 150));
+            st.changed = true;
+        }
+    };
+    percent("Brightness", s.brightness);
+    percent("Gamma", s.gamma);
     Heading("Rendering");
     static const std::vector<uint32_t> kPercents = {50, 67, 75, 100, 125, 150, 200};
     uint32_t rh = app::Output().height * s.render_percent / 100;
@@ -341,7 +352,7 @@ void Menu(State& st) {
     // the screen dimmed behind it
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(0, 0, 0, 110));
     float fs = ImGui::GetFontSize();
-    ImVec2 size(std::min(screen.x * 0.9f, fs * 30), std::min(screen.y * 0.9f, fs * 24));
+    ImVec2 size(std::min(screen.x * 0.9f, fs * 30), std::min(screen.y * 0.9f, fs * 27));
     ImGui::SetNextWindowPos(ImVec2((screen.x - size.x) / 2, (screen.y - size.y) / 2));
     ImGui::SetNextWindowSize(size);
     if (!st.was_open) ImGui::SetNextWindowFocus();
@@ -388,8 +399,9 @@ void Menu(State& st) {
     }
     ImGui::PopID();
 
-    // under every section: back to the desktop, asked twice so a stray press does not end the game
-    ImGui::Dummy(ImVec2(0, fs * 1.2f));
+    // under every section, in the same place just above the keys: back to the desktop, asked twice so a stray press
+    // does not end the game
+    ImGui::SetCursorPos(ImVec2(0, size.y - foot - fs * 1.9f - fs * 0.3f));
     if (Row("Quit to desktop", st.quit_armed ? "Press A again to quit" : "", true, true)) {
         if (st.quit_armed) {
             if (st.changed) app::Save();

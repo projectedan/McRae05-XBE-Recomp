@@ -56,6 +56,8 @@ void Load() {
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
     s.sharp_2d = t["sharp_2d"].value_or(s.sharp_2d);
     s.aa = std::min(t["anti_aliasing"].value_or(s.aa), 2u);
+    s.brightness = std::clamp(t["brightness"].value_or(s.brightness), 50u, 150u);
+    s.gamma = std::clamp(t["gamma"].value_or(s.gamma), 50u, 150u);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
@@ -81,6 +83,8 @@ toml::table Table() {
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"sharp_2d", s.sharp_2d},
                   {"anti_aliasing", int64_t(s.aa)},
+                  {"brightness", int64_t(s.brightness)},
+                  {"gamma", int64_t(s.gamma)},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
