@@ -50,7 +50,8 @@ const app::GameInfo app::kGame = {
     .log = "cmr2005",                     // log file prefix
     .settings = "settings.toml",          // settings file beside the exe
     .splash = L"splash",                  // optional splash.png or splash.bmp beside the exe
-    .missing = L"Put Colin McRae Rally 2005 in the assets folder: its disc image (.iso), or default.xbe with its folders beside it.",
+    .missing = L"Put Colin McRae Rally 2005 (the US Xbox version) in the assets folder: its disc image (.iso), or "
+               L"default.xbe with its folders beside it.",
     .images = {{"default.xbe", "CMR2005"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"mix_dialogue", nullptr, &g_mix_dialogue}, {"mix_front", nullptr, &g_mix_front},
                 {"mix_centre", nullptr, &g_mix_centre},     {"mix_back", nullptr, &g_mix_back},

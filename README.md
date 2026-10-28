@@ -7,6 +7,11 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 > [!NOTE]
 > This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
 
+> [!IMPORTANT]
+> Only the **US (NTSC) Xbox version** of the game is supported. The European and other releases have a different
+> `default.xbe` and will most likely crash; the port warns at start if it finds one. The supported `default.xbe` has
+> the SHA-1 `fea919b18610e640aa0a40e41c566a4a453eaccb`. The PC version of the game will not work.
+
 ## Installation
 
 - Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
