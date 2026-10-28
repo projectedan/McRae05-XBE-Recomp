@@ -3145,8 +3145,10 @@ void D3D12Backend::FinishCapture(const Surface& front) {
 void D3D12Backend::StartCapture() {
     SYSTEMTIME tm;
     GetLocalTime(&tm);
-    char stamp[32];
-    snprintf(stamp, sizeof(stamp), "%02u%02u%02u", tm.wHour, tm.wMinute, tm.wSecond);
+    // the time, then the present: captures a second apart or less (XBE_CAPTURE_AT) keep folders of their own
+    char stamp[48];
+    snprintf(stamp, sizeof(stamp), "%02u%02u%02u_f%05llu", tm.wHour, tm.wMinute, tm.wSecond,
+             static_cast<unsigned long long>(presents_));
     std::error_code ec;
     cap_dir_ = std::filesystem::weakly_canonical(app::ExeDir() / diag::CaptureDir() / stamp, ec);
     std::filesystem::create_directories(cap_dir_, ec);
