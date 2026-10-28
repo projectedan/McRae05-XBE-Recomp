@@ -5,6 +5,7 @@
 // from the export ids the image's .XTLID lists them under (the runtime logs them at boot as "dsound: exports running
 // their original code") and from their code.
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -137,4 +138,33 @@ X86_FUNC(sub_0005C8D0) {
                  f(fr + o + 8), f(fr + o + 12), f(fr + o + 16), f(fr + o + 20), f(fr + o + 24), f(fr + o + 28));
     }
     __imp__sub_0005C8D0(ctx, base);
+}
+
+// The speedometer's lamp labels (Turbo, Water, Oil) are sprites of the HUD atlas from texel 39.5 to 83.5, 44 pixels
+// wide; their dark dot starts at texel 39, so the game cuts half its first column, which the console's 640x480 hides
+// and render scale 3 shows as a flat edge. Each label starts a pixel and a texel further left: the whole dot, the text
+// where it was. sub_0017FC90(sprites, count) draws 0x28 byte records: colour, u0 u1 v0 v1, x0 x1 y0 y1, z.
+X86_EXTERN_FUNC(__imp__sub_0017FC90);
+X86_FUNC(sub_0017FC90) {
+    uint32_t sprites = Arg(ctx, 0), count = Arg(ctx, 1);
+    auto f = [](uint32_t a) {
+        uint32_t b = ::kernel::R32(a);
+        float v;
+        std::memcpy(&v, &b, 4);
+        return v;
+    };
+    auto w = [](uint32_t a, float v) {
+        uint32_t b;
+        std::memcpy(&b, &v, 4);
+        ::kernel::W32(a, b);
+    };
+    for (uint32_t i = 0; i < count && i < 64; i++) {
+        uint32_t s = sprites + i * 0x28;
+        float u0 = f(s + 4), u1 = f(s + 8), x0 = f(s + 0x14), x1 = f(s + 0x18);
+        if (u0 <= 0 || std::fabs(u1 / u0 - 83.5f / 39.5f) > 1e-4f || std::fabs(x1 - x0 - 44) > 1e-3f) continue;
+        w(s + 4, u0 * 38.5f / 39.5f);
+        w(s + 0x14, x0 - 1);
+        LOG_FIRST(1, "cmr: speedometer lamp labels start a texel earlier, their dots whole");
+    }
+    __imp__sub_0017FC90(ctx, base);
 }
