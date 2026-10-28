@@ -12,4 +12,8 @@
   `preview.png` with game text now and in each family: `fontgen assets/fonts out_dir 4 Arial Roboto` (the first
   family's sheets are written). `FONTGEN_DEBUG=<font>` prints each glyph's spans.
 - `texkey.py`: the port's texture name for a `.dds` (gpu/texturedumper.cpp Key).
+- `tracing_refs.py assets/fonts out/ui_reference/fonts 4`: references for redrawing the fonts by hand: each sheet
+  enlarged (letters dark on white), a transparent overlay of each letter's box, a CSV of the boxes, and `README.txt`
+  with the name each finished sheet takes in `textures/replacement/`. The rest of the UI: `dump_textures = true` with
+  `dump_2d_only = true` in settings.toml dumps only the textures 2D draws read (text, HUD, menus, icons).
 - `rebuild_font.cpp`, `sdf_demo.py`, `bmp2png.py`: the earlier previews of rebuilt and distance field fonts.

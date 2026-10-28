@@ -26,6 +26,7 @@ struct Settings {
     uint32_t aniso = 0;              // 0 as the game asks
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
+    bool dump_2d_only = false;       // with dump_textures: only those 2D draws read (text, HUD, menus, icons)
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     bool sharp_2d = true;            // 2D draws (menus, HUD, text) sample enlarged textures bicubic, sharper
     uint32_t aa = 0;                 // anti-aliasing of the finished frame: 0 off, 1 FXAA, 2 SMAA

@@ -534,6 +534,8 @@ struct Tex {
     uint8_t flags = 0;  // Extension::Decoded's
     const Tex* swap = nullptr;  // the texture pack's image drawn in its place
     uint64_t pack_key = 0;      // its pack image is still loading
+    uint64_t name = 0;          // texturedumper::Key of its bytes, 0 when none is taken
+    uint64_t dumped = 0;        // the name last dumped by a 2D draw (dump_2d_only)
     uint32_t pack_gen = 0;      // texturedumper::Generation the key was taken at, 0 after new bytes
 };
 
@@ -923,6 +925,7 @@ private:
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
     std::unordered_set<uint64_t> screen_vs_;  // vertex shader keys of 2D programs (ScreenSpaceProgram)
+    bool drawing_2d_ = false;  // the draw binding textures is 2D (DrawShaders::screen)
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -2086,6 +2089,11 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         }
     }
     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
+    // the UI's textures alone: those a 2D draw (text, HUD, menus, icons) reads
+    if (drawing_2d_ && tx.name && tx.dumped != tx.name && app::Get().dump_2d_only) {
+        tx.dumped = tx.name;
+        texturedumper::Dump(tx.name, d, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), colours);
+    }
     if (tx.pack_key) LatchPackImage(tx);
     const Tex& drawn = tx.swap ? *tx.swap : tx;
     stages.pack[stage] = tx.swap != nullptr;
@@ -2101,7 +2109,9 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
     tx.pack_gen = texturedumper::Generation();
     tx.swap = nullptr;
     uint64_t key = texturedumper::Key(d, fi, p, colours);
-    texturedumper::Dump(key, d, p, colours);
+    tx.name = key;
+    // dump_2d_only dumps from the bind of a 2D draw instead (BindGuestTexture)
+    if (!app::Get().dump_2d_only) texturedumper::Dump(key, d, p, colours);
     // dumping alone keys the bytes too: the pack image is not drawn then
     tx.pack_key = texturedumper::Replacing() ? key : 0;
 }
@@ -2986,7 +2996,10 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
-    if (!BindStageTexturesAndTargets(s, stages)) return;
+    drawing_2d_ = sh.screen;
+    bool bound = BindStageTexturesAndTargets(s, stages);
+    drawing_2d_ = false;
+    if (!bound) return;
     // 2D draws (menus, HUD, text) sample the title's own filtered textures sharper: bicubic where enlarged. Not render
     // targets or depth, not texel addressed ones, not a texture pack's images (sized past the console's). CMR's 2D
     // all comes through its own screen space program, none pretransformed

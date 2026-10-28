@@ -52,6 +52,7 @@ void Load() {
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
+    s.dump_2d_only = t["dump_2d_only"].value_or(s.dump_2d_only);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
     s.sharp_2d = t["sharp_2d"].value_or(s.sharp_2d);
     s.aa = std::min(t["anti_aliasing"].value_or(s.aa), 2u);
@@ -76,6 +77,7 @@ toml::table Table() {
                   {"anisotropic_filtering", int64_t(s.aniso)},
                   {"custom_textures", s.custom_textures},
                   {"dump_textures", s.dump_textures},
+                  {"dump_2d_only", s.dump_2d_only},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"sharp_2d", s.sharp_2d},
                   {"anti_aliasing", int64_t(s.aa)},
