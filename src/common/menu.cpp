@@ -225,6 +225,10 @@ void Graphics(State& st) {
         st.changed = true;
     }
     Heading("Menus and HUD");
+    if (Row("Widescreen HUD", s.fit_2d ? "Fitted" : "Stretched", app::Widescreen())) {
+        s.fit_2d = !s.fit_2d;
+        st.changed = true;
+    }
     if (Row("Sharper 2D", OnOff(s.sharp_2d))) {
         s.sharp_2d = !s.sharp_2d;
         st.changed = true;

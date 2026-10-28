@@ -28,6 +28,7 @@ struct Settings {
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     bool sharp_2d = true;            // 2D draws (menus, HUD, text) sample enlarged textures bicubic, sharper
+    bool fit_2d = true;              // widescreen: 2D draws at their 4:3 shape, anchored to the nearest edge
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 

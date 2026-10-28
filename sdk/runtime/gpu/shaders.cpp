@@ -54,6 +54,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 amb;
     float4 lt[56];
     float4 rtshift;
+    float4 squeeze;
 };
 )";
 
@@ -231,6 +232,8 @@ const char* kVsEpilogue = R"(
     // surf.w set: a point, which stays put since pulled out it would leave the target
     if (surf.w == 0 && abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;
     if (surf.w == 0 && abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;
+    // a 4:3 layout on a 16:9 display: narrowed to its own shape, towards the edge it belongs to
+    if (squeeze.x != 0) p.x = p.x * squeeze.x + squeeze.y;
     q.x = p.x * 2 / surf.x - 1;
     q.y = 1 - p.y * 2 / surf.y;
     q.z = p.z * surf.z;
