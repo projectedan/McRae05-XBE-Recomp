@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iterator>
 #include <string>
@@ -32,6 +34,9 @@ constexpr uint16_t kStart = 1 << 4, kBack = 1 << 5;
 
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_swallow{false};  // closed: the game's input stays empty until every button is up
+// what the player last used: a controller's port, kKeyboard, or kNoInput before anything was touched
+constexpr int kKeyboard = -1, kNoInput = -2;
+std::atomic<int> g_last_input{kNoInput};
 
 ImFont* g_body = nullptr;
 bool g_focus_first = false;  // the next row takes the focus: the menu opened or the section changed
@@ -91,6 +96,8 @@ struct State {
     bool was_open = false;
     bool changed = false;
     bool quit_armed = false;  // Quit to desktop pressed once
+    double hint_at = -1;      // when the start-up reminder shows, ImGui time
+    bool hint_done = false;   // shown, or the menu was opened
     int tab = 0, shown_tab = -1;
     std::vector<std::pair<uint32_t, uint32_t>> modes;
 };
@@ -225,6 +232,11 @@ void Graphics(State& st) {
 }
 
 void Overlay(State& st) {
+    Heading("Reminders");
+    if (Row("Menu reminder at start", OnOff(g_menu_hint != 0))) {
+        g_menu_hint = g_menu_hint ? 0 : 1;
+        st.changed = true;
+    }
     Heading("Performance");
     static const char* kFps[] = {"Off", "Frames a second", "With frame time"};
     if (int step = Row("Frame counter", kFps[std::min(g_show_fps, 2u)])) {
@@ -248,6 +260,46 @@ void FrameCounter(double fps) {
     ImGui::End();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
+}
+
+// the reminder a few seconds after start: how to open the menu with what the player is using, in the menu's colours,
+// faded in and out at the top of the screen
+void Hint(State& st) {
+    constexpr double kDelay = 4, kShow = 8, kFade = 0.5;
+    double now = ImGui::GetTime();
+    if (st.hint_at < 0) st.hint_at = now + kDelay;
+    if (st.hint_done || !g_menu_hint || now < st.hint_at) return;
+    double t = now - st.hint_at;
+    if (t > kShow) {
+        st.hint_done = true;
+        return;
+    }
+    float alpha = float(std::min({1.0, t / kFade, (kShow - t) / kFade}));
+    int port = g_last_input;
+    char keys[64];
+    if (port >= 0) {
+        auto [back, start] = input::BackStartNames(port);
+        std::snprintf(keys, sizeof keys, "%s + %s", back, start);
+    } else {
+        std::snprintf(keys, sizeof keys, "F1");
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    float fs = ImGui::GetFontSize(), pad = fs * 0.9f;
+    ImFont* title = g_title ? g_title : ImGui::GetFont();
+    float tsize = fs * 1.15f;
+    const char* head = "SETTINGS.";
+    char line[128];
+    std::snprintf(line, sizeof line, "Press  %s  at any time to open the menu", keys);
+    ImVec2 hs = title->CalcTextSizeA(tsize, FLT_MAX, 0, head), ls = ImGui::CalcTextSize(line);
+    float w = pad * 3 + hs.x + ls.x, h = std::max(hs.y, ls.y) + pad * 1.2f;
+    ImVec2 a((io.DisplaySize.x - w) / 2, io.DisplaySize.y * 0.06f), b(a.x + w, a.y + h);
+    auto col = [&](ImVec4 c) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); };
+    dl->AddRectFilled(a, b, col(ImVec4(kBand.x, kBand.y, kBand.z, 0.92f)));
+    dl->AddRectFilled(ImVec2(a.x, b.y - fs * 0.14f), b, col(kAccent));
+    float cy = a.y + (h - fs * 0.14f) / 2;
+    dl->AddText(title, tsize, ImVec2(a.x + pad, cy - hs.y / 2), col(ImVec4(0.91f, 0.90f, 0.89f, 1)), head);
+    dl->AddText(ImVec2(a.x + pad * 2 + hs.x, cy - ls.y / 2), col(ImVec4(0.91f, 0.90f, 0.89f, 0.85f)), line);
 }
 
 // every pad's buttons into ImGui's gamepad keys; read: false lets them all go without reading the pads
@@ -386,6 +438,7 @@ void Window(void*) {
 }
 
 bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) g_last_input = kKeyboard;
     if (msg == WM_KEYDOWN && wp == VK_F1) {
         Toggle();
         *result = 0;
@@ -418,6 +471,7 @@ void Draw(double fps) {
     // the pads are read only while the menu is up: reads from the render thread wait on the game's own and stall it
     if (open || st.was_open) FeedGamepad(open);
     if (open && !st.was_open) {
+        st.hint_done = true;
         st.modes = Modes();
         st.changed = false;
         st.quit_armed = false;
@@ -433,11 +487,20 @@ void Draw(double fps) {
     if (open) Menu(st);
     st.was_open = open;
     FrameCounter(fps);
+    if (!open) Hint(st);
 }
 
 void Pad(int port, input::Pad& pad) {
     // Back and Start together, on any controller, open and close the menu
     static uint16_t last[4] = {};
+    if (port >= 0 && port < 4 && pad.connected) {
+        // the reminder names what was touched last: this controller once it is used, or first seen before anything
+        bool used = pad.buttons || std::abs(pad.lx) > 8000 || std::abs(pad.ly) > 8000;
+        for (uint8_t v : pad.analog) used |= v > 0x20;
+        int none = kNoInput;
+        if (used) g_last_input = port;
+        else g_last_input.compare_exchange_strong(none, port);
+    }
     if (port >= 0 && port < 4) {
         uint16_t both = kStart | kBack;
         bool now = (pad.buttons & both) == both, before = (last[port] & both) == both;

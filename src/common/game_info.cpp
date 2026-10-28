@@ -19,6 +19,7 @@ namespace cmr {
 uint32_t g_mix_dialogue = 100, g_mix_front = 100, g_mix_centre = 100, g_mix_back = 100, g_mix_sub = 100,
          g_mix_sub_hz = 0;
 uint32_t g_show_fps = 0;
+uint32_t g_menu_hint = 1;
 
 void ApplyMix() {
     auto pc = [](uint32_t v, float base) { return base * float(v) / 100.0f; };
@@ -54,7 +55,8 @@ const app::GameInfo app::kGame = {
     .options = {{"mix_dialogue", nullptr, &g_mix_dialogue}, {"mix_front", nullptr, &g_mix_front},
                 {"mix_centre", nullptr, &g_mix_centre},     {"mix_back", nullptr, &g_mix_back},
                 {"mix_sub", nullptr, &g_mix_sub},           {"mix_sub_hz", nullptr, &g_mix_sub_hz},
-                {"audio_effects", nullptr, &g_audio_effects}, {"show_fps", nullptr, &g_show_fps}},
+                {"audio_effects", nullptr, &g_audio_effects}, {"show_fps", nullptr, &g_show_fps},
+                {"menu_hint", nullptr, &g_menu_hint}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = Init,                         // after the settings load, before the window and boot

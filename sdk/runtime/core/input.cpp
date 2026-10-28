@@ -118,6 +118,22 @@ Pad Read(int port) {
     return p;
 }
 
+std::pair<const char*, const char*> BackStartNames(int port) {
+    std::lock_guard lock(g_lock);
+    SDL_Gamepad* pad = port >= 0 && port < 4 ? g_pads[port] : nullptr;
+    switch (pad ? SDL_GetGamepadType(pad) : SDL_GAMEPAD_TYPE_UNKNOWN) {
+        case SDL_GAMEPAD_TYPE_XBOXONE: return {"View", "Menu"};
+        case SDL_GAMEPAD_TYPE_PS3: return {"Select", "Start"};
+        case SDL_GAMEPAD_TYPE_PS4: return {"Share", "Options"};
+        case SDL_GAMEPAD_TYPE_PS5: return {"Create", "Options"};
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return {"-", "+"};
+        default: return {"Back", "Start"};
+    }
+}
+
 uint16_t HeldOnAnyController() {
     constexpr std::pair<SDL_GamepadButton, uint16_t> kFaceButtons[] = {
         {SDL_GAMEPAD_BUTTON_SOUTH, 0x1000}, {SDL_GAMEPAD_BUTTON_EAST, 0x2000},

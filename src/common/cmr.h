@@ -11,6 +11,8 @@ namespace cmr {
 extern uint32_t g_mix_dialogue, g_mix_front, g_mix_centre, g_mix_back, g_mix_sub, g_mix_sub_hz;
 // 0 none, 1 frames a second, 2 with the frame time
 extern uint32_t g_show_fps;
+// 1: a few seconds after start, a reminder of how to open the menu
+extern uint32_t g_menu_hint;
 void ApplyMix();
 const char* BuildId();
 
