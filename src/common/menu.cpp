@@ -226,11 +226,7 @@ void Graphics(State& st) {
         s.aa = (std::min(s.aa, 2u) + 3 + uint32_t(step)) % 3;
         st.changed = true;
     }
-    Heading("Menus and HUD");
-    if (Row("Sharper 2D", OnOff(s.sharp_2d))) {
-        s.sharp_2d = !s.sharp_2d;
-        st.changed = true;
-    }
+    // sharp_2d (settings file only): bicubic sampling of the 2D did little to CMR's text
 }
 
 void Overlay(State& st) {
