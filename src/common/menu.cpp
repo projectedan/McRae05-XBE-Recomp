@@ -224,6 +224,12 @@ void Graphics(State& st) {
         s.custom_textures = !s.custom_textures;
         st.changed = true;
     }
+    Heading("Anti-aliasing");
+    static const char* kAa[] = {"Off", "FXAA"};
+    if (int step = Row("Edge smoothing", kAa[std::min(s.aa, 1u)])) {
+        s.aa = (std::min(s.aa, 1u) + 2 + uint32_t(step)) % 2;
+        st.changed = true;
+    }
     Heading("Menus and HUD");
     if (Row("Sharper 2D", OnOff(s.sharp_2d))) {
         s.sharp_2d = !s.sharp_2d;

@@ -147,11 +147,58 @@ O vs(uint id : SV_VertexID) {
     o.uv = uvrect.xy + t * uvrect.zw;
     return o;
 }
+float luma(float2 uv) { return dot(img.SampleLevel(ls, uv, 0).rgb, float3(0.299, 0.587, 0.114)); }
+// FXAA-style edge smoothing in the source's texels (tx): where the local contrast is high enough, find the edge's
+// direction from the luma gradients, walk along it both ways to its ends, then sample across it by how near the
+// pixel is to the nearer end; a sub-pixel term softens single pixel detail
+float3 fxaa(float2 uv, float2 tx) {
+    float3 m = img.SampleLevel(ls, uv, 0).rgb;
+    float lM = dot(m, float3(0.299, 0.587, 0.114));
+    float lN = luma(uv + float2(0, -tx.y)), lS = luma(uv + float2(0, tx.y));
+    float lW = luma(uv + float2(-tx.x, 0)), lE = luma(uv + float2(tx.x, 0));
+    float lMax = max(lM, max(max(lN, lS), max(lW, lE))), lMin = min(lM, min(min(lN, lS), min(lW, lE)));
+    float range = lMax - lMin;
+    if (range < max(0.0312, lMax * 0.125)) return m;
+    float lNW = luma(uv - tx), lSE = luma(uv + tx);
+    float lNE = luma(uv + float2(tx.x, -tx.y)), lSW = luma(uv + float2(-tx.x, tx.y));
+    float edgeH = abs(lNW + lNE - 2 * lN) + 2 * abs(lW + lE - 2 * lM) + abs(lSW + lSE - 2 * lS);
+    float edgeV = abs(lNW + lSW - 2 * lW) + 2 * abs(lN + lS - 2 * lM) + abs(lNE + lSE - 2 * lE);
+    bool horz = edgeH >= edgeV;
+    float l1 = horz ? lN : lW, l2 = horz ? lS : lE;
+    float g1 = l1 - lM, g2 = l2 - lM;
+    bool first = abs(g1) >= abs(g2);
+    float scaled = 0.25 * max(abs(g1), abs(g2));
+    float across = horz ? tx.y : tx.x;
+    float local = 0.5 * ((first ? l1 : l2) + lM);
+    if (first) across = -across;
+    float2 c0 = uv + (horz ? float2(0, across * 0.5) : float2(across * 0.5, 0));
+    float2 along = horz ? float2(tx.x, 0) : float2(0, tx.y);
+    float2 p1 = c0 - along, p2 = c0 + along;
+    float e1 = luma(p1) - local, e2 = luma(p2) - local;
+    bool done1 = abs(e1) >= scaled, done2 = abs(e2) >= scaled;
+    const float steps[11] = {1, 1, 1, 1, 1.5, 2, 2, 2, 2, 4, 8};
+    [unroll] for (int k = 0; k < 11; k++) {
+        if (!done1) { p1 -= along * steps[k]; e1 = luma(p1) - local; done1 = abs(e1) >= scaled; }
+        if (!done2) { p2 += along * steps[k]; e2 = luma(p2) - local; done2 = abs(e2) >= scaled; }
+    }
+    float d1 = horz ? uv.x - p1.x : uv.y - p1.y, d2 = horz ? p2.x - uv.x : p2.y - uv.y;
+    bool nearer1 = d1 < d2;
+    float offset = 0.5 - min(d1, d2) / (d1 + d2);
+    bool lower = lM < local;
+    if (((nearer1 ? e1 : e2) < 0) == lower) offset = 0;
+    float avg = (2 * (lN + lS + lW + lE) + lNW + lNE + lSW + lSE) / 12;
+    float sub = saturate(abs(avg - lM) / range);
+    sub = (-2 * sub + 3) * sub * sub;
+    offset = max(offset, sub * sub * 0.75);
+    return img.SampleLevel(ls, uv + (horz ? float2(0, offset * across) : float2(offset * across, 0)), 0).rgb;
+}
 float4 psmain(O i) : SV_Target {
     float4 c = 0;
     int n = max((int)opts.z, 1);
     float2 px = fwidth(i.uv);
-    if (opts2.x > 0) {
+    if (opts2.y > 0 && opts2.x <= 0) {
+        c = float4(fxaa(i.uv, opts2.zw), 1);
+    } else if (opts2.x > 0) {
         // a disc of opts2.x pixels, its taps on a golden angle spiral turned a little per pixel (noise, not ghosts),
         // weighted to the centre
         float turn = frac(52.9829189 * frac(dot(i.p.xy, float2(0.06711056, 0.00583715)))) * 6.2831853;
@@ -465,6 +512,7 @@ struct BlitOptions {
     DXGI_FORMAT rtv = kBgra;  // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     float blur = 0;           // a disc blur of this radius in target pixels, in place of taps
+    bool fxaa = false;        // edge smoothing (anti-aliasing) in the source's texels, in place of taps
 };
 
 // Shrink's settings past the source and the size
@@ -1468,9 +1516,10 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
+    D3D12_RESOURCE_DESC sd = src->GetDesc();
     float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
                    o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
-                   o.blur, 0, 0, 0};
+                   o.blur, o.fxaa ? 1.0f : 0.0f, 1.0f / float(sd.Width), 1.0f / float(sd.Height)};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
@@ -3258,7 +3307,9 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetScissorRects(1, &scissor);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     // the frame blurred behind a game's menu (app::g_backdrop_blur)
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .blur = app::g_backdrop_blur.load() * float(bb_h_) / 60.0f});
+    // anti-aliasing on the finished frame (the HUD with it), unless the menu's blur is over it
+    Blit(t.res.Get(), t.fmt, uv,
+         {.gamma = gamma_, .blur = app::g_backdrop_blur.load() * float(bb_h_) / 60.0f, .fxaa = app::Get().aa == 1});
 }
 
 void D3D12Backend::RenderUi() {

@@ -28,6 +28,7 @@ struct Settings {
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     bool sharp_2d = true;            // 2D draws (menus, HUD, text) sample enlarged textures bicubic, sharper
+    uint32_t aa = 0;                 // anti-aliasing of the finished frame: 0 off, 1 FXAA
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
