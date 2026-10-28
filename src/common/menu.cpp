@@ -41,6 +41,20 @@ std::atomic<int> g_last_input{kNoInput};
 ImFont* g_body = nullptr;
 bool g_focus_first = false;  // the next row takes the focus: the menu opened or the section changed
 ImFont* g_title = nullptr;
+float g_font_px = 32;  // the size the fonts were built at; each frame scales them to the window (Draw)
+
+// for a Windows without Segoe UI or Arial Black (Proton, Wine): Lato and Archivo Black, SIL Open Font License 1.1
+// (sdk/third_party/fonts)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc23-extensions"
+const unsigned char kLato[] = {
+#embed "lato/Lato-Regular.ttf"
+};
+const unsigned char kArchivoBlack[] = {
+#embed "archivoblack/ArchivoBlack-Regular.ttf"
+};
+#pragma clang diagnostic pop
+static_assert(sizeof(kLato) > 4096 && sizeof(kArchivoBlack) > 4096, "the fonts were not embedded (--embed-dir)");
 
 void Toggle() {
     bool was = g_open.load();
@@ -364,10 +378,9 @@ void Menu(State& st) {
     float pad = fs * 1.2f;
 
     // the band: the title, then the sections, the current one underlined
-    float band = (g_title ? g_title->FontSize : fs * 2) * 1.35f;
+    float tsize = fs * 2, band = tsize * 1.35f;
     dl->AddRectFilled(at, ImVec2(at.x + size.x, at.y + band), ImGui::GetColorU32(kBand));
     ImFont* title = g_title ? g_title : ImGui::GetFont();
-    float tsize = g_title ? g_title->FontSize : fs * 2;
     dl->AddText(title, tsize, ImVec2(at.x + pad, at.y + (band - tsize) / 2), IM_COL32(232, 230, 226, 255), "SETTINGS.");
 
     if (Pressed(ImGuiKey_GamepadL1) || Pressed(ImGuiKey_PageUp)) st.tab = (st.tab + kTabCount - 1) % kTabCount;
@@ -431,18 +444,24 @@ void Menu(State& st) {
 }  // namespace
 
 void Window(void*) {
-    // Segoe UI for the settings, Arial Black for the title as CMR's heavy Helvetica, sized for the monitor
+    // Segoe UI for the settings, Arial Black for the title as CMR's heavy Helvetica, else the ones built in. Built no
+    // smaller than 32 px (the monitor Windows reports can be a compositor's small one, as under Gamescope); each frame
+    // scales them to the game's window
     ImGuiIO& io = ImGui::GetIO();
-    float px = std::max(16.0f, float(app::Desktop().height) / 48.0f);
+    g_font_px = std::max(32.0f, float(app::Desktop().height) / 48.0f);
     std::filesystem::path fonts = std::filesystem::path(_wgetenv(L"WINDIR") ? _wgetenv(L"WINDIR") : L"C:\\Windows") / "Fonts";
-    auto add = [&](const char* name, float size) -> ImFont* {
+    auto add = [&](const char* name, const unsigned char* own, size_t own_size, float size) -> ImFont* {
         std::filesystem::path p = fonts / name;
         std::error_code ec;
-        return std::filesystem::is_regular_file(p, ec) ? io.Fonts->AddFontFromFileTTF(p.string().c_str(), size) : nullptr;
+        if (std::filesystem::is_regular_file(p, ec)) return io.Fonts->AddFontFromFileTTF(p.string().c_str(), size);
+        ImFontConfig cfg;
+        cfg.FontDataOwnedByAtlas = false;  // static data, not the atlas's to free
+        LOGI("menu: %s missing, the built in font instead", name);
+        return io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(own), int(own_size), size, &cfg);
     };
-    g_body = add("segoeui.ttf", px);
+    g_body = add("segoeui.ttf", kLato, sizeof(kLato), g_font_px);
+    g_title = add("ariblk.ttf", kArchivoBlack, sizeof(kArchivoBlack), g_font_px * 2.0f);
     if (!g_body) g_body = io.Fonts->AddFontDefault();
-    g_title = add("ariblk.ttf", px * 2.0f);
     io.FontDefault = g_body;
     Style();
 }
@@ -478,6 +497,9 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
 void Draw(double fps) {
     State& st = g_state;
     bool open = g_open;
+    // text a 48th of the window's height, 16 px at the least, whatever size the fonts were built at
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.y > 0) io.FontGlobalScale = std::max(16.0f, io.DisplaySize.y / 48.0f) / g_font_px;
     // the pads are read only while the menu is up: reads from the render thread wait on the game's own and stall it
     if (open || st.was_open) FeedGamepad(open);
     if (open && !st.was_open) {

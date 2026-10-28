@@ -129,6 +129,9 @@ function(add_xbe_image target xbe config partitions game_dir)
     file(READ ${smaa_src} smaa_text)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/smaa/smaa_hlsl.inc "R\"SMAA(${smaa_text})SMAA\"\n")
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/smaa ${XBE_SDK_DIR}/third_party/smaa)
+    # the overlay's built in fonts (#embed, which searches its own paths, not the include ones), for a Windows without
+    # its own (Proton, Wine)
+    target_compile_options(${target} PRIVATE --embed-dir=${XBE_SDK_DIR}/third_party/fonts)
     # its comments carry Latin-1 bytes (a middle dot), which land in the string as they are
     set_source_files_properties(${XBE_SDK_DIR}/runtime/gpu/d3d12.cpp PROPERTIES COMPILE_OPTIONS -Wno-invalid-source-encoding)
     target_compile_options(${target} PRIVATE -fno-strict-aliasing)
