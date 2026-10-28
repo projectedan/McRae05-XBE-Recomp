@@ -220,10 +220,6 @@ void Graphics(State& st) {
         s.aniso = Step(kAniso, s.aniso, step);
         st.changed = true;
     }
-    if (Row("Texture packs", OnOff(s.custom_textures))) {
-        s.custom_textures = !s.custom_textures;
-        st.changed = true;
-    }
     Heading("Anti-aliasing");
     static const char* kAa[] = {"Off", "FXAA", "SMAA"};
     if (int step = Row("Edge smoothing", kAa[std::min(s.aa, 2u)])) {

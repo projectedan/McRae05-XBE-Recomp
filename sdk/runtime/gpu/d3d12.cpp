@@ -613,6 +613,7 @@ struct DrawShaders {
     bool prog = false;  // a vertex program, else the fixed function pipeline
     bool quad = false;
     bool fixed_transform = false;  // fixed function on untransformed vertices: the shader reads matrices and lights
+    bool screen = false;  // positions in screen pixels as they come: pretransformed, or a program passing v0 through
     FixedKey fk;
     uint64_t vkey = 0;
     uint64_t vh = 0;
@@ -921,6 +922,7 @@ private:
     std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
+    std::unordered_set<uint64_t> screen_vs_;  // vertex shader keys of 2D programs (ScreenSpaceProgram)
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -2300,14 +2302,29 @@ std::string VertexHlsl(const State& s, const Assembled& a, const DrawShaders& sh
 }
 
 // sets sh.vh and sh.vs_code, compiling the shader on a cache miss
+// a vertex program whose only position is its first input, as it comes or moved by a constant (CMR draws all its 2D,
+// HUD, text and menus, with one that adds c1, the XDK's screen space offset): its draws are 2D in screen pixels
+bool ScreenSpaceProgram(const std::string& src) {
+    size_t at = src.find("oPos.");
+    if (at == std::string::npos || src.find("oPos.", at + 1) != std::string::npos) return false;
+    size_t line = src.rfind("precise float4 mr", at);
+    if (line == std::string::npos) return false;
+    std::string mr = src.substr(line, at - line);
+    return mr.find("(i.v0).xyzw") != std::string::npos && mr.find("dot(") == std::string::npos &&
+           mr.find("mac_mul") == std::string::npos;
+}
+
 void D3D12Backend::EnsureVertexShader(const State& s, const Assembled& a, DrawShaders& sh) {
     auto vit = shader_src_.find(sh.vkey);
     if (vit != shader_src_.end()) {
         sh.vs_code = blobs_[vit->second].Get();
         sh.vh = vit->second;
+        sh.screen = a.pretransformed || screen_vs_.count(sh.vkey);
         return;
     }
     std::string src = VertexHlsl(s, a, sh);
+    if (sh.prog && ScreenSpaceProgram(src)) screen_vs_.insert(sh.vkey);
+    sh.screen = a.pretransformed || screen_vs_.count(sh.vkey);
     sh.vs_code = Compile(sh.quad ? QuadHlsl(std::move(src)) : src, "main", "vs_5_0", sh.vh);
     shader_src_[sh.vkey] = sh.vh;
 }
@@ -2971,8 +2988,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     DrawTextures stages;
     if (!BindStageTexturesAndTargets(s, stages)) return;
     // 2D draws (menus, HUD, text) sample the title's own filtered textures sharper: bicubic where enlarged. Not render
-    // targets or depth, not texel addressed ones, not a texture pack's images (sized past the console's)
-    if (a.pretransformed && app::Get().sharp_2d && !texturedumper::Replacing())
+    // targets or depth, not texel addressed ones, not a texture pack's images (sized past the console's). CMR's 2D
+    // all comes through its own screen space program, none pretransformed
+    if (sh.screen && app::Get().sharp_2d && !texturedumper::Replacing())
         for (int i = 0; i < 4; i++) {
             TexInfo& ti = stages.info[i];
             if (ti.kind == kTex2D && !ti.rect && !ti.shadow && !stages.rt[i] &&
