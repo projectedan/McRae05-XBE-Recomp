@@ -1179,6 +1179,8 @@ bool D3D12Backend::BindTargets(const State& s) {
     if (rt) {
         if (LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
         Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        // what its memory holds as the GPU starts on it: Sync tells the CPU's later writes from it
+        if (!rt->drawn) rt->sig = MemSig(rt->data, rt->bytes);
         rt->drawn = true;
     }
     if (ds) {
@@ -2400,6 +2402,21 @@ void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawC
         for (uint32_t k = 0; k < n * 4; k++) fprintf(cap_, " %g", a.vertices[v * n * 4 + k]);
         fprintf(cap_, " ]");
     }
+    // read as they are (inline, UP and buffer draws): each register's first 4 vertices, its bytes as floats
+    if (a.vertices.empty()) {
+        for (int r = 0; r < 16; r++) {
+            if (!((a.regs >> r) & 1)) continue;
+            const VertexElement& e = a.elements[size_t(r)];
+            const VertexBuffer& b = a.buffers[e.buffer];
+            if (!b.src || !b.stride) continue;
+            fprintf(cap_, "\n       v%d (dxgi %u, +%u):", r, e.format, e.offset);
+            for (uint32_t v = 0; v < 4 && size_t(v) * b.stride + e.offset + 16 <= b.bytes; v++) {
+                float f[4];
+                std::memcpy(f, b.src + size_t(v) * b.stride + e.offset, sizeof f);
+                fprintf(cap_, " [ %g %g %g %g ]", f[0], f[1], f[2], f[3]);
+            }
+        }
+    }
     for (int r = 0; r < kVsConstants; r++) {
         const auto& v = s.vsc[r];
         if (v[0] || v[1] || v[2] || v[3]) {
@@ -3366,6 +3383,15 @@ void D3D12Backend::Sync(uint32_t data, uint32_t) {
                   it->second.w, it->second.h);
     }
     Target& t = it->second;
+    // the CPU wrote here after the GPU started (CMR loads its logo, 256x64 DXT1 at 035C7000, into memory a stage's
+    // 180x180 target at 035B6000 covered, then blocks on that target): those bytes are newer than the GPU's pixels,
+    // which the console wrote back long before, so the memory stays as it is
+    if (uint64_t now = MemSig(t.data, t.bytes); now != t.sig) {
+        LOG_FIRST(8, "d3d12: target %08X not read back, the CPU wrote its memory since it was drawn", data);
+        t.drawn = false;
+        t.sig = now;
+        return;
+    }
     // src.down, when there is one, stays alive until ReadBack is done
     CopySource src = PrepareCopySource(t, {});
     if (!src.res) return;
