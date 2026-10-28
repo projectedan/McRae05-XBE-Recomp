@@ -423,6 +423,10 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
                 }
                 LOGI("d3d: BlockOnResource on surface %08X, stack %08X %08X %08X %08X", data, code[0], code[1], code[2], code[3]);
             }
+            // a texture is read when the render thread draws, as the console's GPU reads it: the XDK frees one only
+            // after blocking on it (CMR shows its Codemasters logo for one frame, then releases it, and the next
+            // allocation filled the memory before the frame was drawn)
+            if (type == 0x40000) g_backend->WaitResource(res);
             g_backend->Sync(data, 0);
         } else {
             g_backend->WaitResource(res);
